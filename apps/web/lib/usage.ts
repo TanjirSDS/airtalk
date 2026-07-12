@@ -39,6 +39,25 @@ export async function pauseOrgAgents(db: SupabaseClient, engine: VoiceEngine, or
   }
 }
 
+/** Undo pauseOrgAgents (payment recovered, cap raised): reactivate agents and
+ *  re-attach their numbers at the provider. Idempotent. */
+export async function resumeOrgAgents(db: SupabaseClient, engine: VoiceEngine, orgId: string) {
+  await db.from('agents').update({ status: 'active' }).eq('org_id', orgId).eq('status', 'paused')
+  const { data: numbers } = await db
+    .from('phone_numbers')
+    .select('provider_number_id, agents(provider_agent_id)')
+    .eq('org_id', orgId)
+    .not('provider_number_id', 'is', null)
+    .not('agent_id', 'is', null)
+  for (const n of numbers ?? []) {
+    const providerAgentId = (n.agents as any)?.provider_agent_id
+    if (!providerAgentId) continue
+    await engine
+      .attachNumber(n.provider_number_id, providerAgentId)
+      .catch((e) => console.error(`attachNumber(${n.provider_number_id}) failed:`, e))
+  }
+}
+
 /**
  * Atomically add a call's seconds to the org's current usage period (SQL
  * function — never read-modify-write) and enforce thresholds:

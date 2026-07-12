@@ -14,6 +14,10 @@ const schema = z.object({
    *  scripts fail fast when they're missing. */
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
+  /** Stripe billing (Phase 5). Webhook secret comes from the endpoint config
+   *  (dashboard or `stripe listen`). */
+  STRIPE_SECRET_KEY: z.string().min(1),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1),
   /** Optional: outcome extraction (Phase 3) is skipped when absent. */
   OPENAI_API_KEY: z.string().min(1).optional(),
   /** Optional: shared secret for /api/cron/* (Vercel sends it as a Bearer token). */

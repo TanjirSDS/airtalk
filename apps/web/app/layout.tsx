@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
+import { graceDaysLeft } from '../lib/billing-math'
 import { activeOrg, currentUsage } from '../lib/org'
 import { userClient } from '../lib/supabase-server'
 import './globals.css'
@@ -12,6 +13,24 @@ async function signOut() {
   const db = await userClient()
   await db.auth.signOut()
   redirect('/login')
+}
+
+async function DunningBanner() {
+  const org = await activeOrg()
+  if (!org?.paymentFailedAt) return null
+  const left = graceDaysLeft(new Date(org.paymentFailedAt), new Date())
+  const text =
+    left > 0
+      ? `Payment failed — update your payment method within ${left} day${left === 1 ? '' : 's'} or your agents will be paused.`
+      : 'Payment failed — your agents are paused until payment succeeds.'
+  return (
+    <div className="bg-destructive px-6 py-2 text-center text-sm text-white">
+      {text}{' '}
+      <Link href="/billing" className="underline">
+        Fix payment →
+      </Link>
+    </div>
+  )
 }
 
 async function UsageBanner() {
@@ -56,6 +75,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <Link href="/agents" className="text-muted-foreground hover:text-foreground">
               Agents
             </Link>
+            <Link href="/billing" className="text-muted-foreground hover:text-foreground">
+              Billing
+            </Link>
             {org && (
               <span className="ml-auto flex items-center gap-3 text-muted-foreground">
                 {org.name} · {org.plan.name}
@@ -68,6 +90,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             )}
           </nav>
         </header>
+        <DunningBanner />
         <UsageBanner />
         <main className="mx-auto max-w-4xl px-6 py-8">{children}</main>
       </body>
