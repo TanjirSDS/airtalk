@@ -49,3 +49,21 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
 ## Phase decisions log
 
 (Updated after each phase: chosen endpoints, payload quirks, decisions made.)
+
+### Phase 1 skeleton (2026-07-12)
+- ElevenLabs endpoints (verified against docs): POST /v1/convai/agents/create,
+  PATCH/DELETE /v1/convai/agents/{id}, POST /v1/convai/phone-numbers (Twilio import,
+  takes account sid+token), PATCH /v1/convai/phone-numbers/{id} (assign agent_id),
+  POST /v1/convai/twilio/outbound-call, POST /v1/convai/batch-calling/submit.
+- Outbound/batch calls need agent_phone_number_id — engine looks it up via
+  GET /v1/convai/phone-numbers by assigned agent.
+- providerCallId = ElevenLabs conversation_id. Webhooks carry no event id, so
+  webhook_events.event_id = `${type}:${conversation_id}`.
+- HMAC: `elevenlabs-signature: t=<unix>,v0=<hex hmac-sha256("t.body")>` — implemented
+  from docs, VERIFY against a live webhook when keys exist.
+- metadata.cost is ElevenLabs credits, not cents → calls.cost_cents left null until
+  reconciliation (rule 5).
+- fixtures/post-call-transcription.json is SYNTHETIC — replace with a captured live
+  payload during Phase 1 acceptance.
+- Single env.ts lives in packages/db/src/env.ts (lazy getEnv() so Vercel builds
+  without secrets); engine gets keys via constructor, never reads env.
