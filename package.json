@@ -1,0 +1,29 @@
+{
+  "name": "airtalk",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "test": "vitest run",
+    "bootstrap": "tsx scripts/bootstrap.ts",
+    "outbound-test": "tsx scripts/outbound-test.ts"
+  },
+  "dependencies": {
+    "@airtalk/db": "*",
+    "@airtalk/engine": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "dotenv": "^16",
+    "tsx": "^4",
+    "turbo": "^2",
+    "typescript": "^5",
+    "vitest": "^3"
+  },
+  "packageManager": "npm@10.8.2"
+}

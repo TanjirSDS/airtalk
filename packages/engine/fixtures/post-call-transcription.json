@@ -1,0 +1,31 @@
+{
+  "_note": "SYNTHETIC fixture built from the documented shape. Replace with a captured live webhook body in Phase 1 and delete this key.",
+  "type": "post_call_transcription",
+  "event_timestamp": 1752300042,
+  "data": {
+    "agent_id": "agent_placeholder0000000000000000",
+    "conversation_id": "conv_placeholder00000000000000000",
+    "status": "done",
+    "transcript": [
+      { "role": "agent", "message": "Thanks for calling Joe's Plumbing, this is an AI assistant. How can I help?", "time_in_call_secs": 0 },
+      { "role": "user", "message": "Hi, my kitchen sink is leaking.", "time_in_call_secs": 5 },
+      { "role": "agent", "message": "Sorry to hear that. Can I get your name and number so we can schedule a visit?", "time_in_call_secs": 9 }
+    ],
+    "metadata": {
+      "start_time_unix_secs": 1752300000,
+      "call_duration_secs": 42,
+      "cost": 137,
+      "phone_call": {
+        "type": "twilio",
+        "direction": "inbound",
+        "agent_number": "+15551230000",
+        "external_number": "+15559876543",
+        "call_sid": "CA00000000000000000000000000000000"
+      }
+    },
+    "analysis": {
+      "call_successful": "success",
+      "transcript_summary": "Caller reported a leaking kitchen sink; agent collected contact details."
+    }
+  }
+}
