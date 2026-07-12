@@ -7,6 +7,10 @@ export interface ActiveOrg {
   name: string
   minutesCap: number
   overagePolicy: 'pause' | 'overage'
+  /** Set while a payment failure is unresolved (Phase 5 dunning). */
+  paymentFailedAt: string | null
+  /** Downgrade waiting for the next billing period. */
+  pendingPlanId: string | null
   plan: { id: string; name: string; maxAgents: number; kbEnabled: boolean; adaptiveEnabled: boolean }
 }
 
@@ -23,7 +27,7 @@ export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
   const { data } = await db
     .from('org_members')
     .select(
-      'org_id, role, orgs(name, minutes_cap, overage_policy, plans(id, name, max_agents, kb_enabled, adaptive_enabled))'
+      'org_id, role, orgs(name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans(id, name, max_agents, kb_enabled, adaptive_enabled))'
     )
     .eq('user_id', user.id)
     .limit(1)
@@ -36,6 +40,8 @@ export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
     name: org.name,
     minutesCap: org.minutes_cap,
     overagePolicy: org.overage_policy,
+    paymentFailedAt: org.payment_failed_at,
+    pendingPlanId: org.pending_plan_id,
     plan: {
       id: org.plans.id,
       name: org.plans.name,

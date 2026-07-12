@@ -14,7 +14,9 @@
     "bootstrap": "tsx scripts/bootstrap.ts",
     "outbound-test": "tsx scripts/outbound-test.ts",
     "seed-calls": "tsx scripts/seed-calls.ts",
-    "seed-orgs": "tsx scripts/seed-orgs.ts"
+    "seed-orgs": "tsx scripts/seed-orgs.ts",
+    "stripe-setup": "tsx scripts/stripe-setup.ts",
+    "stripe-acceptance": "tsx scripts/stripe-acceptance.ts"
   },
   "dependencies": {
     "@airtalk/db": "*",

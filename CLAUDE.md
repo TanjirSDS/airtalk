@@ -158,3 +158,51 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   auto-skip without .env.local (still no Supabase project as of Phase 4).
   Acceptance items needing live infra (webhook-outage reconciliation vs
   provider dashboard, cap-crossing pause) remain to be run after `seed-orgs`.
+
+### Phase 5 billing (2026-07-12)
+- 0005 fixes plans.price_cents: Phase 4 seeded DOLLARS (499) — now real cents
+  (49900). scripts/stripe-setup refuses to run against unfixed rows.
+- Stripe's classic usage-records API is legacy (verified 2026-07-12): overage
+  uses Billing Meters — one meter 'overage_minutes' (sum, customer_mapping
+  by_id), metered price $0.35/min via recurring.meter. Usage lands as meter
+  events keyed by stripe_customer_id, so no subscription_item id is stored.
+- npm run stripe-setup: idempotent via price lookup_keys ({plan}_monthly,
+  {plan}_annual, overage_minutes) + product metadata.plan_id; amount drift →
+  replacement price + transfer_lookup_key (prices are immutable). Annual =
+  round(monthly×12×0.85), exact cents for all three plans. Ids stored in plans
+  (stripe_overage_price_id duplicated per row — one global price, no new table).
+- Overage reporting rides the nightly reconcile cron AFTER recompute_usage
+  (rule 5): delta = floor(overage_minutes) − floor(overage_reported) per
+  current period, sent as ONE meter event/org/day with identifier
+  `overage:{orgId}:{date}` — Stripe dedupes identifiers ~24h, so cron re-runs
+  can't double-bill. usage_periods.overage_reported is the running ledger.
+- Plan changes (lib/billing.ts): upgrade = subscriptions.update with
+  create_prorations (webhook raises cap immediately, releases any pending
+  schedule); downgrade = subscription schedule (from_subscription, 2 phases,
+  end_behavior release) + orgs.pending_plan_id — plan_id flips when the phase
+  transition fires customer.subscription.updated. Stripe-node v19/Basil:
+  current_period_start/end live on subscription ITEMS, not the subscription.
+- Webhook /api/webhooks/stripe (rule 2, event_id = Stripe evt id):
+  syncSubscription matches the sub's price ids against plans and sets
+  plan_id/minutes_cap, then recompute_usage so the period's cap snapshot +
+  overage follow mid-cycle. invoice.payment_failed sets payment_failed_at
+  ONCE (.is null guard — Stripe retries must not reset the 7-day grace);
+  invoice.paid clears it and resumes agents (resumeOrgAgents = re-attach
+  numbers, inverse of Phase 4 pause). Cap-raise also resumes, but never while
+  payment_failed_at is set. Dunning pause enforced by the nightly cron when
+  grace expires.
+- Checkout (existing org, client_reference_id = org id) appends the metered
+  overage item only when overage_policy='overage'; reportOverageDaily
+  self-heals subs missing the item (policy flipped later). Portal for
+  cards/invoices/cancel. Billing writes go through serviceClient (orgs are
+  member-read-only under RLS) gated on role='owner' in the server action.
+- Money math is pure + tested in apps/web/lib/billing-math.ts (annual cents,
+  overage delta incl. the 900/750→150min≈$52.50 acceptance case, upgrade-now
+  vs downgrade-pending, grace countdown). Webhook idempotency tested with
+  stripe.webhooks.generateTestHeaderString (offline).
+- npm run stripe-acceptance: test-clock harness (test key only) — Starter→
+  Growth mid-cycle proration, 150 meter minutes ≈ $52.50 on the preview
+  invoice (meters aggregate async; polls ~1-2 min), failing card at renewal →
+  past_due. Not yet run: no .env.local/Stripe account as of Phase 5 — run
+  stripe-setup + stripe-acceptance when the stack is stood up; webhook secret
+  comes from the dashboard endpoint or `stripe listen`.
