@@ -206,3 +206,70 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   past_due. Not yet run: no .env.local/Stripe account as of Phase 5 — run
   stripe-setup + stripe-acceptance when the stack is stood up; webhook secret
   comes from the dashboard endpoint or `stripe listen`.
+
+### Phase 6 launch (2026-07-12)
+- Signup funnel /signup → org → plan → agent → number → done, resumable: every
+  page checks its prerequisite (user → membership → stripe_subscription_id →
+  agent → phone_number) and redirects forward/back; the server actions in
+  app/signup/actions.ts re-validate everything (pages are UX, actions are the
+  gate). Magic-link send moved into ONE server action (app/auth/actions.ts,
+  shared by login+signup) so it could be rate-limited; signup passes
+  shouldCreateUser:true, login stays false. /auth/callback honors ?next= (same-
+  origin paths only). Middleware routes org-less users to /signup/org (one
+  indexed RLS select per authed page request — JWT claim if it ever hurts).
+- Numbers: lib/numbers.ts (raw Twilio REST like bootstrap.ts — rule 1 fences
+  only ElevenLabs). Search AvailablePhoneNumbers/US/Local.json (AreaCode,
+  VoiceEnabled, PageSize=10), buy IncomingPhoneNumbers.json (PhoneNumber only —
+  US local needs no address/bundle). Rule 3 guards in numberPurchaseBlocked():
+  no sub / no agent / already-has-number (one number per org in self-serve).
+  On import/attach failure after purchase → releaseNumber (DELETE stops the
+  monthly charge).
+- Emails: Resend v6 accepts `react:` directly BUT @react-email/render must be
+  installed (optional peer dep — silent runtime throw without it). Templates in
+  apps/web/emails/index.tsx; lib/email.ts no-ops without RESEND_API_KEY (same
+  pattern as OPENAI_API_KEY). Magic-link email CANNOT be sent from app code —
+  it's GoTrue's mailer; point Supabase at Resend SMTP (smtp.resend.com, user
+  "resend") in the dashboard, template configurable there or via Management API.
+- Inngest v4 (breaking vs v3: triggers live IN the config object —
+  createFunction({id, retries, onFailure, triggers:[{event|cron}]}, handler);
+  keys read from INNGEST_EVENT_KEY/SIGNING_KEY; INNGEST_DEV=1 for local).
+  lib/jobs.ts: classify-call (event call/recorded), reconcile-daily (03:00 UTC
+  cron, replaced vercel.json — file deleted), status-poll (*/5), weekly-summary
+  (Mon 14:00 UTC), 4 email functions. Dead-letter = onFailure → Sentry.
+  lib/events.ts emit() returns false on send failure → webhook falls back to
+  inline classification, so no-Inngest dev still works. /api/inngest is in
+  middleware PUBLIC_PREFIXES (signed requests).
+- Crossing-based emails reuse Phase 4/5 fires-once guards: usage warn/cap ride
+  usageCrossing; payment-failed rides the `.is('payment_failed_at', null)`
+  update, which now .select('id')s the rows it marked to know WHO to email.
+- Ops: VoiceEngine.ping() (GET /v1/user, free) added for health probes.
+  lib/health.ts: runHealthChecks (5s/probe timeout), statuspage.io parsing
+  (status.elevenlabs.io + status.twilio.com /api/v2/status.json, indicator
+  none=ok), downTransitions (alert only on ok→down edge). status-poll writes
+  provider_status (0006); IncidentBanner in layout shows rows down <1h old.
+  /api/health returns booleans only (public route — details go to Sentry).
+  Acceptance path: killed key → poll marks elevenlabs down ≤5 min → banner +
+  Sentry.captureMessage. agents/new + signup/agent render a notice instead of
+  crashing when listVoices fails.
+- Admin: admin_users table (0006), seeded via npm run seed-admin. is_org_member
+  now ORs is_admin() → RLS lets admins read/write every org, so "view as org"
+  = admin-view-org cookie honored by activeOrg() (role:'admin', which never
+  passes the 'owner' billing gates) and real pages render through normal RLS.
+  Middleware skips the org-less redirect for /admin and when the cookie is set.
+  Credit adjustments: usage_adjustments rows (note + created_by audit),
+  recompute_usage (0006) folds sum(minutes_delta) in and clamps at 0 — nightly
+  reconcile can't wipe a credit (rule 5). Bounds in lib/admin-adjustment.ts.
+- Security: lib/ratelimit.ts (Upstash sliding window; auth 8/15m per-IP AND
+  per-email, webhooks 300/min/IP pre-signature; fails OPEN when Redis is down
+  or env absent). CSP + nosniff/frame/referrer headers in next.config.mjs
+  ('unsafe-inline' script-src — Next inline bootstrap; nonces later). Cron
+  route now fails CLOSED without CRON_SECRET. Audited: service key server-only.
+  Webhook secret rotation: nothing live yet — rotate ELEVENLABS_WEBHOOK_SECRET
+  + STRIPE_WEBHOOK_SECRET when real endpoints exist.
+- Sentry: instrumentation.ts adds onRequestError (captureRequestError);
+  instrumentation-client.ts inits browser SDK off NEXT_PUBLIC_SENTRY_DSN. No
+  withSentryConfig wrapper (source maps can come later).
+- Migration 0006 NOT applied anywhere yet (still no Supabase project). Full
+  acceptance (incognito → paying org → live call; kill key in staging) needs
+  the stack stood up: apply 0001–0006, stripe-setup, Inngest Vercel
+  integration, Resend domain + Supabase SMTP, seed-admin.

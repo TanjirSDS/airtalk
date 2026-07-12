@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@airtalk/db'
 import type { VoiceEngine } from '@airtalk/engine'
+import { emit } from './events'
 
 export type UsageCrossing = 'warn' | 'cap' | null
 
@@ -80,8 +81,13 @@ export async function recordCallUsage(
 
   const crossing = usageCrossing(row.prev_minutes, row.new_minutes, row.cap_minutes)
   if (crossing === 'warn') {
-    // ponytail: spec says "email warn (log for now)" — swap for email in a later phase.
     console.warn(`org ${orgId} passed 80% of its minute cap (${row.new_minutes}/${row.cap_minutes})`)
+    // Phase 6: owner email rides Inngest; crossing-based, so it fires exactly once.
+    await emit('usage/warned', {
+      orgId,
+      minutesUsed: row.new_minutes,
+      capMinutes: row.cap_minutes,
+    })
   } else if (crossing === 'cap') {
     const { data: org } = await db.from('orgs').select('overage_policy').eq('id', orgId).maybeSingle()
     if (org?.overage_policy === 'pause') {
@@ -89,5 +95,10 @@ export async function recordCallUsage(
       await pauseOrgAgents(db, engine, orgId)
     }
     // 'overage': record_call_usage already accumulates overage_minutes.
+    await emit('usage/capped', {
+      orgId,
+      capMinutes: row.cap_minutes,
+      policy: org?.overage_policy ?? 'pause',
+    })
   }
 }

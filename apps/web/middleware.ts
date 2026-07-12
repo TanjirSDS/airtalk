@@ -1,8 +1,8 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-// Signature-verified or secret-guarded machine routes, plus the login flow itself.
-const PUBLIC_PREFIXES = ['/login', '/auth', '/api/webhooks', '/api/cron', '/api/health']
+// Signature-verified or secret-guarded machine routes, plus the login/signup flows.
+const PUBLIC_PREFIXES = ['/login', '/signup', '/auth', '/api/webhooks', '/api/cron', '/api/health', '/api/inngest']
 
 // Refreshes the Supabase session cookie and gates everything else behind login.
 // Org resolution happens per-request in lib/org.ts (RLS does the actual scoping).
@@ -29,6 +29,23 @@ export async function middleware(req: NextRequest) {
   const path = req.nextUrl.pathname
   if (!user && !PUBLIC_PREFIXES.some((p) => path.startsWith(p))) {
     return NextResponse.redirect(new URL('/login', req.url))
+  }
+
+  // Phase 6: a signed-in user with no org is mid-signup — route them into the
+  // flow instead of an empty app. Skipped for admins impersonating an org
+  // (activeOrg validates the cookie; a spoofed one is simply ignored there).
+  // ponytail: one indexed RLS select per authenticated page request — move the
+  // membership bit into a JWT claim if this ever shows up in latency.
+  if (
+    user &&
+    !path.startsWith('/signup') &&
+    !path.startsWith('/api') &&
+    !path.startsWith('/auth') &&
+    !path.startsWith('/admin') && // support staff have no memberships
+    !req.cookies.get('admin-view-org')
+  ) {
+    const { data: membership } = await supabase.from('org_members').select('org_id').limit(1).maybeSingle()
+    if (!membership) return NextResponse.redirect(new URL('/signup/org', req.url))
   }
   return res
 }

@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers'
 import { cache } from 'react'
 import { userClient } from './supabase-server'
 
@@ -24,6 +25,51 @@ export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
     data: { user },
   } = await db.auth.getUser()
   if (!user) return null
+
+  // Phase 6 support impersonation: an admin_users member with the view-as
+  // cookie set browses any org. Role 'admin' never matches the 'owner' gates,
+  // so billing/purchase writes stay blocked. RLS lets the reads through
+  // because is_org_member() returns true for admins (migration 0006).
+  const viewAs = (await cookies()).get('admin-view-org')?.value
+  if (viewAs) {
+    const { data: adm } = await db.from('admin_users').select('user_id').eq('user_id', user.id).maybeSingle()
+    if (adm) {
+      const { data: org } = await db
+        .from('orgs')
+        .select(
+          'id, name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans(id, name, max_agents, kb_enabled, adaptive_enabled)'
+        )
+        .eq('id', viewAs)
+        .maybeSingle()
+      if (org) {
+        const plan = org.plans as unknown as {
+          id: string
+          name: string
+          max_agents: number
+          kb_enabled: boolean
+          adaptive_enabled: boolean
+        }
+        return {
+          orgId: org.id,
+          role: 'admin',
+          name: org.name,
+          minutesCap: org.minutes_cap,
+          overagePolicy: org.overage_policy,
+          paymentFailedAt: org.payment_failed_at,
+          pendingPlanId: org.pending_plan_id,
+          plan: {
+            id: plan.id,
+            name: plan.name,
+            maxAgents: plan.max_agents,
+            kbEnabled: plan.kb_enabled,
+            adaptiveEnabled: plan.adaptive_enabled,
+          },
+        }
+      }
+    }
+    // non-admin (or dangling org id): the cookie is meaningless — ignore it.
+  }
+
   const { data } = await db
     .from('org_members')
     .select(

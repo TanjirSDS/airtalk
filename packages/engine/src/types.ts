@@ -91,6 +91,8 @@ export interface VoiceEngine {
   }
   /** All provider calls started in [afterUnix, beforeUnix) — nightly reconciliation. */
   listCalls(afterUnix: number, beforeUnix: number): Promise<ProviderCall[]>
+  /** Cheapest authenticated call — health checks. Rejects when the provider or key is bad. */
+  ping(): Promise<void>
   verifyWebhook(req: WebhookRequest): boolean
   normalizeCallEvent(payload: unknown): CallEvent
   /**

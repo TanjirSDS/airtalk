@@ -43,7 +43,12 @@ async function getAgentRow(db: SupabaseClient, id: string) {
   return data
 }
 
-export async function createAgentAction(input: { template: TemplateKey; profile: BusinessProfile }) {
+export async function createAgentAction(input: {
+  template: TemplateKey
+  profile: BusinessProfile
+  /** Signup flow continues to the number step; default is the agent page. */
+  redirectTo?: string
+}) {
   const db = await userClient()
   let id: string
   try {
@@ -77,7 +82,12 @@ export async function createAgentAction(input: { template: TemplateKey; profile:
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) }
   }
-  redirect(`/agents/${id}`) // outside try — redirect() works by throwing
+  // outside try — redirect() works by throwing; same-origin paths only
+  const dest =
+    input.redirectTo?.startsWith('/') && !input.redirectTo.startsWith('//')
+      ? input.redirectTo
+      : `/agents/${id}`
+  redirect(dest)
 }
 
 export async function updateAgentAction(

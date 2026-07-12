@@ -11,7 +11,10 @@ export async function handleElevenLabsWebhook(
   signature: string | null,
   engine: VoiceEngine,
   db: SupabaseClient,
-  classify?: (transcript: unknown) => Promise<CallOutcome | null>
+  classify?: (transcript: unknown) => Promise<CallOutcome | null>,
+  /** Phase 6: hand classification to Inngest (retries/backoff). Resolves false
+   *  when the event wasn't accepted so the inline `classify` fallback runs. */
+  enqueueClassify?: (providerCallId: string) => Promise<boolean>
 ): Promise<{ status: number; body: string }> {
   if (!engine.verifyWebhook({ rawBody, signature })) {
     return { status: 401, body: 'invalid signature' }
@@ -72,12 +75,16 @@ export async function handleElevenLabsWebhook(
     }
 
     // Phase 3: outcome extraction — best-effort, never fails the webhook.
-    const result = classify ? await classify(ev.transcript).catch(() => null) : null
-    if (result) {
-      await db
-        .from('calls')
-        .update({ outcome: result.outcome, summary: result.summary })
-        .eq('provider_call_id', ev.providerCallId)
+    // Phase 6: prefer the Inngest queue; classify inline only when it refused.
+    const queued = enqueueClassify ? await enqueueClassify(ev.providerCallId).catch(() => false) : false
+    if (!queued) {
+      const result = classify ? await classify(ev.transcript).catch(() => null) : null
+      if (result) {
+        await db
+          .from('calls')
+          .update({ outcome: result.outcome, summary: result.summary })
+          .eq('provider_call_id', ev.providerCallId)
+      }
     }
   }
 

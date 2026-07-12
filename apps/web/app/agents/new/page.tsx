@@ -27,11 +27,23 @@ export default async function NewAgentPage() {
     }
   }
 
-  const voices = await makeEngine().listVoices()
+  // Provider down ≠ dashboard down (Phase 6 graceful degradation).
+  const voices = await makeEngine()
+    .listVoices()
+    .catch((e) => {
+      console.error('listVoices failed:', e)
+      return null
+    })
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">New agent</h1>
-      <AgentWizard voices={voices} />
+      {voices ? (
+        <AgentWizard voices={voices} />
+      ) : (
+        <p className="text-muted-foreground">
+          The voice service is temporarily unreachable — try again in a few minutes.
+        </p>
+      )}
     </div>
   )
 }

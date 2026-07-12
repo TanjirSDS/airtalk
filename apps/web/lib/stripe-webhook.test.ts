@@ -57,6 +57,11 @@ function fakeDb() {
         },
         update(patch: any) {
           const filters: [string, any][] = []
+          const apply = () => {
+            const hit = rows.filter((r) => filters.every(([c, v]) => r[c] === v))
+            hit.forEach((r) => Object.assign(r, patch))
+            return hit
+          }
           const q: any = {
             eq(col: string, v: any) {
               filters.push([col, v])
@@ -66,8 +71,10 @@ function fakeDb() {
               filters.push([col, v])
               return q
             },
+            // Phase 6: payment_failed reads back the ids it marked (email event)
+            select: () => Promise.resolve({ data: apply(), error: null }),
             then(resolve: (v: any) => unknown) {
-              rows.filter((r) => filters.every(([c, v]) => r[c] === v)).forEach((r) => Object.assign(r, patch))
+              apply()
               resolve({ data: null, error: null })
             },
           }
