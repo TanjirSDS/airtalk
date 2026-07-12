@@ -9,6 +9,7 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "typecheck": "turbo typecheck",
+    "lint": "eslint .",
     "test": "vitest run",
     "bootstrap": "tsx scripts/bootstrap.ts",
     "outbound-test": "tsx scripts/outbound-test.ts"
@@ -19,7 +20,9 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@typescript-eslint/parser": "^8.63.0",
     "dotenv": "^16",
+    "eslint": "^9.39.5",
     "tsx": "^4",
     "turbo": "^2",
     "typescript": "^5",
