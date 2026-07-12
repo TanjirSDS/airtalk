@@ -87,3 +87,28 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   (pure TS, no node/provider imports) so client components can use TEMPLATE_INFO.
 - Rule 1 is now machine-enforced: root eslint.config.mjs no-restricted-imports
   blocks elevenlabs imports outside packages/engine (`npm run lint`).
+
+### Phase 3 dashboard (2026-07-12)
+- Recordings: post-call webhooks carry NO audio URL — audio comes from
+  GET /v1/convai/conversations/{id}/audio (verified against docs), exposed as
+  VoiceEngine.fetchRecording() and proxied at /api/calls/[id]/audio. Buffered,
+  not streamed: a Content-Length makes <audio> seeking reliable and recordings
+  are a few MB. calls.recording_url stays for providers with real URLs (proxy
+  302s to it when set).
+- Outcome extraction: apps/web/lib/outcome.ts is the single model+prompt module
+  (gpt-4o-mini, temperature 0, response_format json_object). OPENAI_API_KEY is
+  OPTIONAL in env.ts — no key → classify returns null, calls keep outcome null.
+  Injected into handleElevenLabsWebhook as a classify fn: best-effort, a
+  classifier failure never fails the webhook. Enum enforced twice: parseOutcome
+  and the 0003 check constraint.
+- Transcript turns carry time_in_call_secs (see fixture) → click-to-seek in
+  components/call-player.tsx.
+- /calls and /calls/export share lib/call-filters.ts so table and CSV always
+  agree; export streams via ReadableStream pull() at 1000 rows/page.
+- Dashboard: one 8-week calls query (fetchRecentCalls threads a future orgId
+  param for Phase 4 RLS), aggregation in JS, recharts. Outcome→color map in
+  outcome.ts validated with the dataviz palette checker (CVD ΔE 16.2).
+- npm run seed-calls: 20 deterministic synthetic calls (upsert on
+  provider_call_id seed-conv-NN, idempotent).
+- Migration 0003 NOT applied anywhere yet: no Airtalk Supabase project or
+  .env.local exists as of Phase 3 — apply 0001–0003 when the stack is stood up.

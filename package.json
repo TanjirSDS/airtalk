@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "bootstrap": "tsx scripts/bootstrap.ts",
-    "outbound-test": "tsx scripts/outbound-test.ts"
+    "outbound-test": "tsx scripts/outbound-test.ts",
+    "seed-calls": "tsx scripts/seed-calls.ts"
   },
   "dependencies": {
     "@airtalk/db": "*",

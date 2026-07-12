@@ -9,6 +9,8 @@ const schema = z.object({
   TWILIO_AUTH_TOKEN: z.string().min(1),
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  /** Optional: outcome extraction (Phase 3) is skipped when absent. */
+  OPENAI_API_KEY: z.string().min(1).optional(),
 })
 
 export type Env = z.infer<typeof schema>
