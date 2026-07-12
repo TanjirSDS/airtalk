@@ -1,9 +1,11 @@
 'use server'
 
-import type { SupabaseClient } from '@airtalk/db'
+import { getEnv, serviceClient, type SupabaseClient } from '@airtalk/db'
 import { buildAgentConfig, type BusinessProfile, type TemplateKey } from '@airtalk/engine/templates'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
+import { calcomBookingTool, listEventTypes } from '../../lib/calcom'
+import { appUrl } from '../../lib/email'
 import { makeEngine } from '../../lib/engine'
 import { activeOrg, type ActiveOrg } from '../../lib/org'
 import { userClient } from '../../lib/supabase-server'
@@ -156,5 +158,69 @@ export async function removeKnowledgeAction(agentId: string, knowledgeId: string
   const db = await userClient()
   const agent = await getAgentRow(db, agentId)
   await makeEngine().removeKnowledge(agent.provider_agent_id, knowledgeId)
+  revalidatePath(`/agents/${agentId}`)
+}
+
+/**
+ * Phase 7: connect Cal.com and turn the booking agent's capture-only flow into
+ * real booking — store the org's key, attach the check_availability_and_book
+ * tool at the provider, and re-render the prompt with liveBooking on (rule 4:
+ * the config change lands as a new version row).
+ */
+export async function connectCalcomAction(agentId: string, formData: FormData) {
+  const db = await userClient()
+  try {
+    const org = await requireOrg()
+    if (org.role !== 'owner') throw new Error('Only the org owner can connect a calendar')
+    const env = getEnv()
+    if (!env.APP_URL || !env.AGENT_TOOLS_SECRET) {
+      throw new Error('APP_URL and AGENT_TOOLS_SECRET must be configured for agent tools')
+    }
+
+    const apiKey = (formData.get('apiKey') as string | null)?.trim()
+    const eventTypeId = Number(formData.get('eventTypeId'))
+    if (!apiKey || !Number.isInteger(eventTypeId) || eventTypeId <= 0) {
+      throw new Error('A Cal.com API key and event type id are required')
+    }
+
+    const agent = await getAgentRow(db, agentId)
+    const stored = agent.config as StoredAgentConfig | null
+    if (stored?.template !== 'booking' || !stored.profile) {
+      throw new Error('Live booking only applies to booking-template agents')
+    }
+
+    // Validate the key + id against Cal.com before storing anything.
+    const eventTypes = await listEventTypes(apiKey).catch(() => {
+      throw new Error('Cal.com rejected that API key')
+    })
+    if (!eventTypes.some((t) => t.id === eventTypeId)) {
+      const available = eventTypes.map((t) => `${t.id} (${t.title})`).join(', ') || 'none'
+      throw new Error(`Event type ${eventTypeId} not found for that key. Available: ${available}`)
+    }
+
+    // orgs are member-read-only under RLS — billing-style owner-gated service write.
+    const { error } = await serviceClient()
+      .from('orgs')
+      .update({ calcom_api_key: apiKey, calcom_event_type_id: eventTypeId })
+      .eq('id', org.orgId)
+    if (error) throw new Error(error.message)
+
+    const engine = makeEngine()
+    await engine.setAgentTools(agent.provider_agent_id, [
+      calcomBookingTool(agentId, appUrl(), env.AGENT_TOOLS_SECRET),
+    ])
+    const profile: BusinessProfile = { ...stored.profile, liveBooking: true }
+    const agentConfig = buildAgentConfig('booking', profile)
+    await engine.updateAgent(agent.provider_agent_id, agentConfig)
+    const newStored: StoredAgentConfig = { template: 'booking', profile, agentConfig }
+    const { error: updErr } = await db
+      .from('agents')
+      .update({ config: newStored })
+      .eq('id', agentId)
+    if (updErr) throw new Error(updErr.message)
+    await insertVersion(db, agentId, newStored)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
   revalidatePath(`/agents/${agentId}`)
 }

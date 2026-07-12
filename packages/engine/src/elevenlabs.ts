@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type {
   AgentConfig,
+  AgentTool,
   CallEvent,
   KnowledgeSource,
   ProviderCall,
@@ -198,6 +199,70 @@ export class ElevenLabsEngine implements VoiceEngine {
   /** GET /v1/user — free, no credits consumed; the health check's reachability probe. */
   async ping(): Promise<void> {
     await this.req('GET', '/v1/user')
+  }
+
+  /**
+   * Standalone tools + prompt.tool_ids (inline prompt.tools was removed by
+   * ElevenLabs 2025-07-23; verified against docs 2026-07-12). Replace-then-
+   * delete: create the new tools, point tool_ids at exactly them, then delete
+   * the previously attached ones — idempotent, no orphan tools accumulate.
+   * ponytail: secretHeader is stored as a plain header string, visible to our
+   * own workspace members via the tools API — switch to POST /v1/convai/secrets
+   * + {secret_id} if the workspace ever has untrusted members.
+   */
+  async setAgentTools(providerAgentId: string, tools: AgentTool[]) {
+    const SYSTEM_VARS = {
+      conversationId: 'system__conversation_id',
+      callerId: 'system__caller_id',
+      agentId: 'system__agent_id',
+    } as const
+
+    const agent = await this.req('GET', `/v1/convai/agents/${providerAgentId}`)
+    const oldIds: string[] = agent.conversation_config?.agent?.prompt?.tool_ids ?? []
+
+    const newIds: string[] = []
+    for (const t of tools) {
+      const res = await this.req('POST', '/v1/convai/tools', {
+        tool_config: {
+          type: 'webhook',
+          name: t.name,
+          description: t.description,
+          response_timeout_secs: t.timeoutSecs ?? 20,
+          api_schema: {
+            url: t.url,
+            method: 'POST',
+            content_type: 'application/json',
+            ...(t.secretHeader && { request_headers: { [t.secretHeader.name]: t.secretHeader.value } }),
+            request_body_schema: {
+              type: 'object',
+              required: t.params.filter((p) => p.required).map((p) => p.name),
+              properties: {
+                ...Object.fromEntries(
+                  t.params.map((p) => [p.name, { type: p.type, description: p.description }])
+                ),
+                ...Object.fromEntries(
+                  (t.systemParams ?? []).map((p) => [
+                    p.name,
+                    { type: 'string', dynamic_variable: SYSTEM_VARS[p.source] },
+                  ])
+                ),
+              },
+            },
+          },
+        },
+      })
+      newIds.push(res.id as string)
+    }
+
+    await this.req('PATCH', `/v1/convai/agents/${providerAgentId}`, {
+      conversation_config: { agent: { prompt: { tool_ids: newIds } } },
+    })
+
+    for (const id of oldIds) {
+      await this.req('DELETE', `/v1/convai/tools/${id}`).catch(() => {
+        /* already gone or shared — an orphan tool is harmless */
+      })
+    }
   }
 
   /** Embed per https://elevenlabs.io/docs/eleven-agents/customization/widget —

@@ -22,8 +22,35 @@ function sign(body: string) {
 // The real idempotency guarantee is the UNIQUE constraint in 0001_init.sql;
 // ignoreDuplicates mimics `on conflict do nothing`.
 function fakeDb() {
-  const tables: Record<string, any[]> = { webhook_events: [], calls: [], agents: [] }
+  const tables: Record<string, any[]> = {
+    webhook_events: [],
+    calls: [],
+    agents: [],
+    call_bookings: [],
+    campaigns: [],
+    campaign_contacts: [],
+    opt_outs: [],
+  }
   const rpcCalls: { name: string; args: any }[] = []
+
+  // Chainable filter builder: .eq().in() then .maybeSingle() or await directly.
+  function filter(rows: any[]) {
+    let filtered = rows
+    const q: any = {
+      eq(col: string, v: any) {
+        filtered = filtered.filter((r) => r[col] === v)
+        return q
+      },
+      in(col: string, vs: any[]) {
+        filtered = filtered.filter((r) => vs.includes(r[col]))
+        return q
+      },
+      maybeSingle: () => Promise.resolve({ data: filtered[0] ?? null, error: null }),
+      then: (resolve: (v: any) => unknown) => resolve({ data: filtered, error: null }),
+    }
+    return q
+  }
+
   const db = {
     tables,
     rpcCalls,
@@ -39,7 +66,8 @@ function fakeDb() {
       const rows = tables[name]
       return {
         upsert(row: any, opts: { onConflict: string; ignoreDuplicates?: boolean }) {
-          const existing = rows.find((r) => r[opts.onConflict] === row[opts.onConflict])
+          const keys = opts.onConflict.split(',')
+          const existing = rows.find((r) => keys.every((k) => r[k] === row[k]))
           let data: any[] = []
           if (existing) {
             if (!opts.ignoreDuplicates) {
@@ -52,21 +80,32 @@ function fakeDb() {
           }
           const result = { data, error: null }
           return {
-            select: () => Promise.resolve(result),
+            select: () => ({
+              maybeSingle: () => Promise.resolve({ data: data[0] ?? null, error: null }),
+              then: (resolve: (v: typeof result) => unknown) => resolve(result),
+            }),
             then: (resolve: (v: typeof result) => unknown) => resolve(result),
           }
         },
-        select: () => ({
-          eq: (col: string, v: any) => ({
-            maybeSingle: () => Promise.resolve({ data: rows.find((r) => r[col] === v) ?? null, error: null }),
-          }),
-        }),
-        update: (patch: any) => ({
-          eq: (col: string, v: any) => {
-            rows.filter((r) => r[col] === v).forEach((r) => Object.assign(r, patch))
-            return Promise.resolve({ data: null, error: null })
-          },
-        }),
+        select: () => filter(rows),
+        update: (patch: any) => {
+          let targets = rows
+          const q: any = {
+            eq(col: string, v: any) {
+              targets = targets.filter((r) => r[col] === v)
+              return q
+            },
+            in(col: string, vs: any[]) {
+              targets = targets.filter((r) => vs.includes(r[col]))
+              return q
+            },
+            then: (resolve: (v: any) => unknown) => {
+              targets.forEach((r) => Object.assign(r, patch))
+              resolve({ data: null, error: null })
+            },
+          }
+          return q
+        },
       }
     },
   }
@@ -123,5 +162,38 @@ describe('elevenlabs webhook handler', () => {
       { name: 'record_call_usage', args: { p_org_id: 'org_1', p_secs: 42 } },
     ])
     expect(db2.tables.calls[0].org_id).toBe('org_1')
+  })
+
+  it('copies a mid-call Cal.com booking ref onto the call row (Phase 7)', async () => {
+    const db = fakeDb()
+    db.tables.call_bookings.push({
+      provider_call_id: 'conv_placeholder00000000000000000',
+      booking_ref: 'bk_uid_1',
+    })
+    await handleElevenLabsWebhook(body, sign(body), engine, db)
+    expect(db.tables.calls[0].booking_ref).toBe('bk_uid_1')
+  })
+
+  it('opt_out classification adds a do-not-call row and scrubs pending contacts (Phase 7)', async () => {
+    const db = fakeDb()
+    db.tables.agents.push({
+      id: 'ag_1',
+      org_id: 'org_1',
+      provider_agent_id: 'agent_placeholder0000000000000000',
+    })
+    db.tables.campaigns.push({ id: 'camp_1', org_id: 'org_1' })
+    db.tables.campaign_contacts.push(
+      { campaign_id: 'camp_1', e164: '+15559876543', status: 'pending' }, // fixture's caller
+      { campaign_id: 'camp_1', e164: '+15550000001', status: 'pending' }
+    )
+
+    const classify = async () => ({ outcome: 'opt_out' as const, summary: 'asked to be removed' })
+    await handleElevenLabsWebhook(body, sign(body), engine, db, classify)
+
+    expect(db.tables.opt_outs).toEqual([
+      { org_id: 'org_1', e164: '+15559876543', source: 'call' },
+    ])
+    expect(db.tables.campaign_contacts.map((c: any) => c.status)).toEqual(['opted_out', 'pending'])
+    expect(db.tables.calls[0].outcome).toBe('opt_out')
   })
 })

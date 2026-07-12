@@ -36,6 +36,9 @@ const schema = z.object({
   /** Optional: Upstash rate limiting (Phase 6). Limits are skipped when absent. */
   UPSTASH_REDIS_REST_URL: z.string().url().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
+  /** Optional: shared secret agent tools send to /api/tools/* (Phase 7).
+   *  Without it the tool route rejects everything and Cal.com connect errors. */
+  AGENT_TOOLS_SECRET: z.string().min(16).optional(),
 })
 
 export type Env = z.infer<typeof schema>

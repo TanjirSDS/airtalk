@@ -49,6 +49,23 @@ export interface ProviderCall {
   status: string
 }
 
+/**
+ * A server tool the agent can call mid-conversation (Phase 7): the provider
+ * POSTs JSON to `url`, the response body is spoken back by the LLM.
+ */
+export interface AgentTool {
+  name: string
+  description: string
+  url: string
+  /** Static header sent with every invocation so `url` can authenticate the provider. */
+  secretHeader?: { name: string; value: string }
+  /** Body fields the LLM fills in. */
+  params: { name: string; type: 'string' | 'number' | 'boolean'; description: string; required?: boolean }[]
+  /** Body fields the PROVIDER fills in at call time (which call is invoking us). */
+  systemParams?: { name: string; source: 'conversationId' | 'callerId' | 'agentId' }[]
+  timeoutSecs?: number
+}
+
 /** Framework-agnostic view of an incoming webhook request. */
 export interface WebhookRequest {
   rawBody: string
@@ -91,6 +108,8 @@ export interface VoiceEngine {
   }
   /** All provider calls started in [afterUnix, beforeUnix) — nightly reconciliation. */
   listCalls(afterUnix: number, beforeUnix: number): Promise<ProviderCall[]>
+  /** Replace the agent's server tools with exactly this set (empty array = none). */
+  setAgentTools(providerAgentId: string, tools: AgentTool[]): Promise<void>
   /** Cheapest authenticated call — health checks. Rejects when the provider or key is bad. */
   ping(): Promise<void>
   verifyWebhook(req: WebhookRequest): boolean

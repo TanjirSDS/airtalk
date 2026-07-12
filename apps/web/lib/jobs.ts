@@ -19,7 +19,9 @@ import {
   STATUS_PAGES,
   type CheckResult,
 } from './health'
+import { dialChunk } from './campaign-runner'
 import { inngest } from './inngest'
+import { externalNumber, recordOptOut } from './opt-out'
 import { classifyCall } from './outcome'
 import { reconcileYesterday } from './reconcile'
 import { stripeClient } from './stripe'
@@ -44,7 +46,7 @@ const classifyRecordedCall = inngest.createFunction(
     const db = serviceClient()
     const { data: call } = await db
       .from('calls')
-      .select('id, transcript, outcome')
+      .select('id, org_id, direction, from_e164, to_e164, transcript, outcome')
       .eq('provider_call_id', providerCallId)
       .maybeSingle()
     if (!call) return 'call row gone'
@@ -54,7 +56,39 @@ const classifyRecordedCall = inngest.createFunction(
     const result = await classifyCall(call.transcript, key)
     if (!result) return 'classifier returned nothing'
     await db.from('calls').update({ outcome: result.outcome, summary: result.summary }).eq('id', call.id)
+    // Phase 7: "remove me" → permanent do-not-call entry + scrub pending contacts.
+    if (result.outcome === 'opt_out' && call.org_id) {
+      const e164 = externalNumber(call)
+      if (e164) await recordOptOut(db, call.org_id, e164)
+    }
     return result.outcome
+  }
+)
+
+/**
+ * Phase 7 outbound runner (rule 3). One loop per campaign: each tick dials a
+ * small chunk, then sleeps 30s — so pause/kill (a status flip in the DB) stops
+ * dialing within 30 seconds. Out-of-window ticks sleep 15 minutes. Concurrency
+ * is 1 per campaign, so a resume while an old loop is mid-sleep can't double-dial.
+ */
+const campaignRun = inngest.createFunction(
+  {
+    id: 'campaign-run',
+    retries: 2,
+    onFailure: deadLetter,
+    concurrency: { limit: 1, key: 'event.data.campaignId' },
+    triggers: [{ event: 'campaign/run' }],
+  },
+  async ({ event, step }) => {
+    const campaignId = event.data.campaignId as string
+    // ponytail: iteration cap is a runaway backstop — 5000 ticks ≈ 52 days of
+    // window-waits; raise if a campaign legitimately runs longer.
+    for (let i = 0; i < 5000; i++) {
+      const res = await step.run(`chunk-${i}`, () => dialChunk(serviceClient(), makeEngine(), campaignId))
+      if (res.kind === 'stopped' || res.kind === 'done') return res
+      await step.sleep(`tick-${i}`, res.kind === 'wait' ? '15m' : '30s')
+    }
+    return { kind: 'iteration-cap' }
   }
 )
 
@@ -219,6 +253,7 @@ const weeklySummary = inngest.createFunction(
 
 export const functions = [
   classifyRecordedCall,
+  campaignRun,
   reconcileDaily,
   statusPoll,
   welcomeEmail,

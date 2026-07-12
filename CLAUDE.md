@@ -273,3 +273,59 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   acceptance (incognito → paying org → live call; kill key in staging) needs
   the stack stood up: apply 0001–0006, stripe-setup, Inngest Vercel
   integration, Resend domain + Supabase SMTP, seed-admin.
+
+### Phase 7 outbound + booking (2026-07-13)
+- 0007: campaigns / campaign_contacts (unique(campaign_id,e164), provider_call_id
+  set at dial time) / opt_outs (pk (org_id,e164), grows-only from the app: member
+  select+insert, no delete) / call_bookings / calls.booking_ref / orgs.calcom_*.
+  calls_outcome_check re-created with 'opt_out'.
+- Runner dials via startOutboundCall in chunks of 5, NOT startBatch — the batch
+  API can't honor per-contact tz windows, the spend cap, or kill between chunks.
+  Inngest 'campaign-run' (concurrency 1 per campaignId so resume can't
+  double-dial): loop { dialChunk → sleep 30s (15m when out-of-window) }, so
+  pause/kill = a status flip picked up ≤30s later. Every tick re-reads status,
+  spend (completed call minutes ×13¢ + 2min-estimate per in-flight call,
+  lib/campaign-math.ts, tested) and re-scrubs opt_outs — opt-outs land even
+  mid-campaign. Cap/exhaustion → status 'done'.
+- Recipient-local window: lib/areacode-tz.ts, hand-maintained NANP map; split
+  area codes (850, 812, 605, 208, 928…) list BOTH zones and must be in-window
+  in all; unknown codes require both coasts in-window. Wizard hours are clamped
+  to 8–21 in clampWindow whatever the jsonb says.
+- Wizard: papaparse client-side, phone column guessed by header regex, all other
+  CSV columns ride as dynamic vars. Consent checkbox is UX; the server action is
+  the gate (consent_attested_at + created_by). Upload scrub keeps rows as
+  status 'opted_out' for visibility. Agent-ownership check via RLS-scoped select
+  (the runner uses the service role, so create is where cross-org agent ids die).
+- Opt-out: outcome classifier gained 'opt_out' (overrides other labels);
+  recordOptOut (lib/opt-out.ts) rides BOTH classify paths (Inngest job + inline
+  webhook fallback). conductRules rule 7 tells every agent to comply immediately
+  and confirm. Contact linking: post-call webhook flips campaign_contacts
+  'calling'→'done' by provider_call_id (outbound only).
+- ElevenLabs tools (verified docs 2026-07-12): standalone POST /v1/convai/tools
+  + agent PATCH prompt.tool_ids — inline prompt.tools was REMOVED 2025-07-23.
+  System values injected per-property via {"dynamic_variable":
+  "system__conversation_id"|"system__caller_id"}. setAgentTools replaces
+  tool_ids then deletes the old tools (idempotent, no orphans). Secret header is
+  a plain string in tool config (visible to our own workspace) — switch to
+  /v1/convai/secrets if untrusted members ever join. VERIFY on a live call:
+  ElevenLabs response body → LLM needs no envelope; 20s default timeout.
+- Cal.com v2 (verified docs 2026-07-12; cal-api-version is PER-ENDPOINT):
+  GET /v2/slots '2024-09-04' (slots keyed by date), POST /v2/bookings
+  '2026-02-25' (attendee needs only name+timeZone → phone-only booking works;
+  booking ref = data.uid), event-types '2024-06-14' via /v2/me username.
+  Slot-taken = plain 400 (no distinct 409) → tool answers "offer another slot".
+  One tool 'check_availability_and_book' (action check|book); caller tz from
+  areacode-tz so slots read in the callee's local time. Booking ref parked in
+  call_bookings mid-call (calls row doesn't exist yet), webhook copies it over.
+  Connect UI on the booking agent's page (owner-gated, key validated against
+  /v2/me before storing; org-level creds on orgs) → setAgentTools + prompt
+  re-render with profile.liveBooking=true as a new version row (rule 4).
+- New env (optional): AGENT_TOOLS_SECRET (≥16 chars) — tool route 401s without
+  it and Cal.com connect refuses; APP_URL required for the tool URL.
+- /api/tools is in middleware PUBLIC_PREFIXES (secret-header auth, not session).
+- Acceptance still needs live infra: apply 0007, set AGENT_TOOLS_SECRET, run the
+  50-contact campaign (window + kill <30s), say "remove me" on one, live
+  Cal.com booking landing in the calendar. Ceilings: reconcile doesn't backfill
+  booking_ref for webhook-missed calls; stale 'calling' contacts (dial ok,
+  webhook lost) stay 'calling' until reconciliation inserts the call — contact
+  flip only happens on the webhook path.

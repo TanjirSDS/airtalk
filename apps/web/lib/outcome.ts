@@ -10,6 +10,7 @@ export const OUTCOMES = [
   'voicemail',
   'spam',
   'failed',
+  'opt_out',
 ] as const
 export type Outcome = (typeof OUTCOMES)[number]
 
@@ -27,6 +28,7 @@ export const OUTCOME_COLORS: Record<Outcome, string> = {
   voicemail: '#e87ba4',
   spam: '#eb6834',
   failed: '#e34948',
+  opt_out: '#77777c',
 }
 
 export const OUTCOME_MODEL = 'gpt-4o-mini'
@@ -40,7 +42,8 @@ Definitions:
 - escalated: the call was handed off to a human or the caller was told a human will call back for something the agent could not handle.
 - voicemail: the call reached a voicemail/answering machine.
 - spam: robocall, telemarketer, or clearly unwanted caller.
-- failed: the call failed or ended before any meaningful exchange.`
+- failed: the call failed or ended before any meaningful exchange.
+- opt_out: the person asked not to be called again, to be removed from a list, or to stop receiving calls. This overrides every other outcome — if they asked to be removed at any point, the outcome is opt_out.`
 
 interface Turn {
   role?: string

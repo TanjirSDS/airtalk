@@ -1,6 +1,7 @@
 import type { KnowledgeSource } from '@airtalk/engine'
 import { notFound } from 'next/navigation'
 import { AgentEditForm } from '../../../components/agent-edit-form'
+import { CalcomConnectForm } from '../../../components/calcom-connect-form'
 import { TestWidget } from '../../../components/test-widget'
 import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
@@ -43,6 +44,13 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
 
   const stored = agent.config as StoredAgentConfig | null
   const editable = !!stored?.profile // bootstrap-era agents predate the wizard shape
+
+  // Phase 7: booking agents can book real Cal.com slots once a calendar is connected.
+  const { data: orgRow } = await db
+    .from('orgs')
+    .select('calcom_api_key, calcom_event_type_id')
+    .maybeSingle()
+  const calcomConnected = !!orgRow?.calcom_api_key && !!orgRow?.calcom_event_type_id
 
   return (
     <div className="space-y-6">
@@ -101,6 +109,25 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
           )}
         </CardContent>
       </Card>
+
+      {stored?.template === 'booking' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Calendar booking (Cal.com)</CardTitle>
+            <CardDescription>
+              Connect a Cal.com calendar and this agent checks real availability and books
+              confirmed appointments during the call, instead of taking a message.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <CalcomConnectForm
+              agentId={id}
+              connected={calcomConnected}
+              eventTypeId={orgRow?.calcom_event_type_id ?? null}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {kbEnabled && (
         <Card>
