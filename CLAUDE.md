@@ -329,3 +329,45 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   booking_ref for webhook-missed calls; stale 'calling' contacts (dial ok,
   webhook lost) stay 'calling' until reconciliation inserts the call — contact
   flip only happens on the webhook path.
+
+### Phase 8 adaptive agents (2026-07-13)
+- 0008: agent_suggestions (org_id, agent_id, week = Monday-UTC of the analyzed
+  week, type, suggestion jsonb, evidence jsonb [{callId, quote}], status,
+  applied_version). RLS: member select+update (apply/dismiss), NO insert
+  policy — rows only come from the cron (service role). Idempotency = the cron
+  skips agents that already have rows for (agent_id, week); no unique needed.
+- Extraction (lib/learning.ts, mirrors outcome.ts: injectable fetch, optional
+  OPENAI_API_KEY): ONE gpt-4o-mini pass per agent per week, response_format
+  json_schema. Caps: 2k chars/call, 60k chars/batch newest-first (skipped
+  count logged), max_tokens 1500, ≤8 suggestions. parseSuggestions drops
+  suggestions whose evidence callIds aren't in the batch (hallucination
+  guard) — no verifiable evidence, no suggestion. Cost-log per run from
+  usage tokens at list price ($0.15/$0.60 per M).
+- Type mapping decided: unanswered/wrong FAQs → faq_addition (model must have
+  the answer evident from transcripts/facts; "answered wrong" = faq_addition
+  whose q matches an existing FAQ, merge REPLACES the answer); escalated/
+  failed calls → escalation_rule; requested-but-unlisted services → kb_gap
+  (only the owner knows if they offer it — never auto-applied, dismiss-only
+  card in the UI).
+- Merge is pure + browser-safe: templates/merge.ts applySuggestionToProfile
+  (null = can't apply: kb_gap, dupes, malformed). prompt_tweak/escalation_rule
+  append to profile.extraInstructions → "## Learned adjustments" section
+  rendered by conductRules for all templates. Tested in merge.test.ts.
+- Apply (applySuggestionsAction, batch and single are the same path): merge
+  all selected into the profile → ONE adapter update → ONE version row →
+  rows marked applied with applied_version. So a batch-apply is a single
+  rollback target (rule 4). FAQ cards have an editable answer input
+  (single-apply only). Gate: org.plan.adaptiveEnabled (plans.adaptive_enabled
+  existed since 0004, pro-only); /agents/[id]/learning shows the upsell card
+  on lower tiers, agents page header links to it.
+- Cron 'agent-learning' Mon 13:00 UTC (before the 14:00 weekly summary):
+  adaptive-plan orgs → per-agent step.run → insert suggestions → per-org
+  "Your agent learned N new things" email listing pending items (no
+  auto-apply exists; everything lands pending, the email always lists).
+  No OPENAI_API_KEY → whole run no-ops, bootstrap-era agents (no profile)
+  skipped.
+- npm run seed-learning: 12 transcripted calls in the last week (3 questions
+  repeated 2–3×, an escalation pattern, a wrong-answer correction) for the
+  first agent with an org. Acceptance needs live infra (still no Supabase/
+  OpenAI env): apply 0008, seed-learning, trigger agent-learning in the
+  Inngest dev UI, then apply/rollback on /agents/[id]/learning.

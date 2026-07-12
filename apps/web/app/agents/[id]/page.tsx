@@ -1,4 +1,5 @@
 import type { KnowledgeSource } from '@airtalk/engine'
+import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { AgentEditForm } from '../../../components/agent-edit-form'
 import { CalcomConnectForm } from '../../../components/calcom-connect-form'
@@ -56,7 +57,10 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">{agent.name}</h1>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <Link className="text-sm underline" href={`/agents/${id}/learning`}>
+            Learning
+          </Link>
           {stored?.template && <Badge variant="secondary">{stored.template}</Badge>}
           <Badge>{agent.status}</Badge>
         </div>

@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import { getEnv, serviceClient } from '@airtalk/db'
+import { suggestionTitle } from '@airtalk/engine/templates'
 import {
+  AgentLearningEmail,
   PaymentFailedEmail,
   UsageCappedEmail,
   UsageWarnEmail,
@@ -21,6 +23,8 @@ import {
 } from './health'
 import { dialChunk } from './campaign-runner'
 import { inngest } from './inngest'
+import { extractSuggestions, type CallForLearning } from './learning'
+import type { StoredAgentConfig } from './types'
 import { externalNumber, recordOptOut } from './opt-out'
 import { classifyCall } from './outcome'
 import { reconcileYesterday } from './reconcile'
@@ -251,6 +255,123 @@ const weeklySummary = inngest.createFunction(
   }
 )
 
+/**
+ * Phase 8: Monday 13:00 UTC (an hour before the weekly summary) — every agent
+ * on an adaptive plan gets one structured LLM pass over its week of
+ * transcripts; results land as pending agent_suggestions rows and the org's
+ * owners get the "your agent learned" email. Idempotent per (agent, week):
+ * a re-run skips agents that already have rows for the week.
+ */
+const agentLearning = inngest.createFunction(
+  { id: 'agent-learning', retries: 1, onFailure: deadLetter, triggers: [{ cron: 'TZ=UTC 0 13 * * 1' }] },
+  async ({ step }) => {
+    const db = serviceClient()
+    const key = getEnv().OPENAI_API_KEY
+    if (!key) return 'no OPENAI_API_KEY — skipped'
+
+    const { data: adaptivePlans, error: planErr } = await db
+      .from('plans')
+      .select('id')
+      .eq('adaptive_enabled', true)
+    if (planErr) throw new Error(planErr.message)
+    const planIds = (adaptivePlans ?? []).map((p) => p.id)
+    if (!planIds.length) return 'no adaptive plans'
+    const { data: orgs, error } = await db.from('orgs').select('id, name').in('plan_id', planIds)
+    if (error) throw new Error(error.message)
+
+    const since = new Date(Date.now() - 7 * 86_400_000)
+    const week = since.toISOString().slice(0, 10) // the Monday the week started (cron runs Mondays)
+
+    let totalSuggestions = 0
+    let totalCostCents = 0
+    let emailed = 0
+    for (const org of orgs ?? []) {
+      const { data: agents } = await db.from('agents').select('id, name, config').eq('org_id', org.id)
+      const digest: { agentId: string; agentName: string; titles: string[] }[] = []
+
+      for (const agent of agents ?? []) {
+        const res = await step.run(`learn-${agent.id}`, async () => {
+          const stored = agent.config as StoredAgentConfig | null
+          if (!stored?.profile) return null // bootstrap-era agent, nothing to merge into
+          const { count } = await db
+            .from('agent_suggestions')
+            .select('id', { count: 'exact', head: true })
+            .eq('agent_id', agent.id)
+            .eq('week', week)
+          if (count) return null // already learned this week
+
+          const { data: calls } = await db
+            .from('calls')
+            .select('id, outcome, transcript')
+            .eq('agent_id', agent.id)
+            .gte('started_at', since.toISOString())
+            .not('transcript', 'is', null)
+            .order('started_at', { ascending: false })
+          const usable = ((calls ?? []) as CallForLearning[]).filter(
+            (c) => Array.isArray(c.transcript) && c.transcript.length > 0
+          )
+          if (!usable.length) return null
+
+          const result = await extractSuggestions(stored.profile, usable, key)
+          if (!result) return null
+          if (result.suggestions.length) {
+            const { error: insErr } = await db.from('agent_suggestions').insert(
+              result.suggestions.map((s) => ({
+                org_id: org.id,
+                agent_id: agent.id,
+                week,
+                type: s.type,
+                suggestion: s.suggestion,
+                evidence: s.evidence,
+              }))
+            )
+            if (insErr) throw new Error(insErr.message)
+          }
+          // item 2: cost-log per run
+          console.log(
+            `agent-learning ${agent.id}: ${usable.length} calls (${result.skippedCalls} over token budget), ` +
+              `${result.suggestions.length} suggestions, ~${result.costCents.toFixed(3)}¢ ` +
+              `(${result.promptTokens}+${result.completionTokens} tokens)`
+          )
+          return {
+            costCents: result.costCents,
+            titles: result.suggestions.map((s) => suggestionTitle(s.type, s.suggestion)),
+          }
+        })
+        if (res) {
+          totalCostCents += res.costCents
+          totalSuggestions += res.titles.length
+          if (res.titles.length) digest.push({ agentId: agent.id, agentName: agent.name, titles: res.titles })
+        }
+      }
+
+      if (digest.length) {
+        const orgSuggestions = digest.reduce((n, d) => n + d.titles.length, 0)
+        const sent = await step.run(`email-${org.id}`, async () => {
+          const to = await orgOwnerEmails(db, org.id)
+          return sendEmail(
+            to,
+            `Your agent learned ${orgSuggestions} new thing${orgSuggestions === 1 ? '' : 's'} this week`,
+            AgentLearningEmail({
+              orgName: org.name,
+              agents: digest,
+              totalSuggestions: orgSuggestions,
+              appUrl: appUrl(),
+            })
+          )
+        })
+        if (sent) emailed++
+      }
+    }
+    return {
+      orgs: (orgs ?? []).length,
+      suggestions: totalSuggestions,
+      emailed,
+      costCents: Math.round(totalCostCents * 1000) / 1000,
+    }
+  }
+)
+
 export const functions = [
   classifyRecordedCall,
   campaignRun,
@@ -261,4 +382,5 @@ export const functions = [
   usageCappedEmail,
   paymentFailedEmail,
   weeklySummary,
+  agentLearning,
 ]
