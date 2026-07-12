@@ -23,8 +23,18 @@ function sign(body: string) {
 // ignoreDuplicates mimics `on conflict do nothing`.
 function fakeDb() {
   const tables: Record<string, any[]> = { webhook_events: [], calls: [], agents: [] }
+  const rpcCalls: { name: string; args: any }[] = []
   const db = {
     tables,
+    rpcCalls,
+    // record_call_usage stand-in; stays below thresholds so no enforcement runs
+    rpc(name: string, args: any) {
+      rpcCalls.push({ name, args })
+      return Promise.resolve({
+        data: [{ prev_minutes: 0, new_minutes: args.p_secs / 60, cap_minutes: 750 }],
+        error: null,
+      })
+    },
     from(name: string) {
       const rows = tables[name]
       return {
@@ -90,5 +100,28 @@ describe('elevenlabs webhook handler', () => {
     expect(call.provider_call_id).toBe('conv_placeholder00000000000000000')
     expect(call.duration_secs).toBe(42)
     expect(db.tables.webhook_events[0].processed_at).toBeTruthy()
+  })
+
+  it('counts usage once per call — replays and unknown agents add nothing', async () => {
+    const db = fakeDb()
+    const sig = sign(body)
+
+    // no agents row → no org to bill
+    await handleElevenLabsWebhook(body, sig, engine, db)
+    expect(db.rpcCalls).toHaveLength(0)
+
+    // with an org-owned agent: first delivery records 42s exactly once
+    const db2 = fakeDb()
+    db2.tables.agents.push({
+      id: 'ag_1',
+      org_id: 'org_1',
+      provider_agent_id: 'agent_placeholder0000000000000000',
+    })
+    await handleElevenLabsWebhook(body, sig, engine, db2)
+    await handleElevenLabsWebhook(body, sig, engine, db2) // replay → duplicate ignored
+    expect(db2.rpcCalls).toEqual([
+      { name: 'record_call_usage', args: { p_org_id: 'org_1', p_secs: 42 } },
+    ])
+    expect(db2.tables.calls[0].org_id).toBe('org_1')
   })
 })

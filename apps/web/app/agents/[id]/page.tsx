@@ -1,4 +1,3 @@
-import { serviceClient } from '@airtalk/db'
 import type { KnowledgeSource } from '@airtalk/engine'
 import { notFound } from 'next/navigation'
 import { AgentEditForm } from '../../../components/agent-edit-form'
@@ -7,8 +6,9 @@ import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { Input } from '../../../components/ui/input'
-import { KNOWLEDGE_BASE_ENABLED } from '../../../lib/flags'
 import { makeEngine } from '../../../lib/engine'
+import { activeOrg } from '../../../lib/org'
+import { userClient } from '../../../lib/supabase-server'
 import type { StoredAgentConfig } from '../../../lib/types'
 import { addKnowledgeAction, removeKnowledgeAction, rollbackAgentAction } from '../actions'
 
@@ -16,9 +16,12 @@ export const dynamic = 'force-dynamic'
 
 export default async function AgentPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const db = serviceClient()
-  const { data: agent } = await db.from('agents').select('*').eq('id', id).single()
+  const db = await userClient() // RLS: another org's agent id 404s
+  const { data: agent } = await db.from('agents').select('*').eq('id', id).maybeSingle()
   if (!agent) notFound()
+
+  // Plan gate (Phase 4): knowledge base is a growth+ feature.
+  const kbEnabled = (await activeOrg())?.plan.kbEnabled ?? false
 
   const { data: versions } = await db
     .from('agent_config_versions')
@@ -30,7 +33,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const voices = await engine.listVoices().catch(() => [])
   let knowledge: KnowledgeSource[] = []
   let knowledgeError: string | null = null
-  if (KNOWLEDGE_BASE_ENABLED && agent.provider_agent_id) {
+  if (kbEnabled && agent.provider_agent_id) {
     try {
       knowledge = await engine.listKnowledge(agent.provider_agent_id)
     } catch (e) {
@@ -99,7 +102,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         </CardContent>
       </Card>
 
-      {KNOWLEDGE_BASE_ENABLED && (
+      {kbEnabled && (
         <Card>
           <CardHeader>
             <CardTitle>Knowledge base</CardTitle>

@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   CallEvent,
   KnowledgeSource,
+  ProviderCall,
   Voice,
   VoiceEngine,
   WebhookRequest,
@@ -88,6 +89,11 @@ export class ElevenLabsEngine implements VoiceEngine {
     await this.req('PATCH', `/v1/convai/phone-numbers/${providerNumberId}`, {
       agent_id: providerAgentId,
     })
+  }
+
+  /** agent_id is nullable in UpdatePhoneNumberRequest — null unassigns (verified against docs 2026-07-12). */
+  async detachNumber(providerNumberId: string) {
+    await this.req('PATCH', `/v1/convai/phone-numbers/${providerNumberId}`, { agent_id: null })
   }
 
   /** The outbound endpoints need the provider phone-number id; look it up by assigned agent. */
@@ -214,6 +220,34 @@ export class ElevenLabsEngine implements VoiceEngine {
       audio: await res.arrayBuffer(),
       contentType: res.headers.get('content-type') ?? 'audio/mpeg',
     }
+  }
+
+  /** GET /v1/convai/conversations with call_start_{after,before}_unix + cursor
+   *  pagination (page_size max 100, has_more/next_cursor) — verified against docs 2026-07-12. */
+  async listCalls(afterUnix: number, beforeUnix: number): Promise<ProviderCall[]> {
+    const out: ProviderCall[] = []
+    let cursor: string | undefined
+    do {
+      const qs = new URLSearchParams({
+        call_start_after_unix: String(afterUnix),
+        call_start_before_unix: String(beforeUnix),
+        page_size: '100',
+        ...(cursor && { cursor }),
+      })
+      const res = await this.req('GET', `/v1/convai/conversations?${qs}`)
+      for (const c of res.conversations as any[]) {
+        out.push({
+          providerCallId: c.conversation_id,
+          providerAgentId: c.agent_id,
+          direction: c.direction === 'outbound' ? 'outbound' : 'inbound',
+          startedAt: new Date(c.start_time_unix_secs * 1000).toISOString(),
+          durationSecs: c.call_duration_secs ?? 0,
+          status: c.status ?? 'done',
+        })
+      }
+      cursor = res.has_more ? res.next_cursor : undefined
+    } while (cursor)
+    return out
   }
 
   /**

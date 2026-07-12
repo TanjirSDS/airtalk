@@ -13,7 +13,8 @@
     "test": "vitest run",
     "bootstrap": "tsx scripts/bootstrap.ts",
     "outbound-test": "tsx scripts/outbound-test.ts",
-    "seed-calls": "tsx scripts/seed-calls.ts"
+    "seed-calls": "tsx scripts/seed-calls.ts",
+    "seed-orgs": "tsx scripts/seed-orgs.ts"
   },
   "dependencies": {
     "@airtalk/db": "*",

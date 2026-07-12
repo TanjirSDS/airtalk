@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server'
-import { serviceClient } from '@airtalk/db'
 import { applyCallFilters, joinedAgentName, parseCallFilters } from '../../../lib/call-filters'
+import { userClient } from '../../../lib/supabase-server'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,7 +13,7 @@ function cell(v: unknown): string {
 
 export async function GET(req: NextRequest) {
   const filters = parseCallFilters(Object.fromEntries(req.nextUrl.searchParams))
-  const db = serviceClient()
+  const db = await userClient()
   const encoder = new TextEncoder()
   let offset = 0
 

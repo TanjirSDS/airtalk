@@ -39,6 +39,16 @@ export interface KnowledgeSource {
   type: 'url' | 'file'
 }
 
+/** One call as the provider reports it — reconciliation's source of truth (rule 5). */
+export interface ProviderCall {
+  providerCallId: string
+  providerAgentId: string
+  direction: 'inbound' | 'outbound'
+  startedAt: string // ISO 8601
+  durationSecs: number
+  status: string
+}
+
 /** Framework-agnostic view of an incoming webhook request. */
 export interface WebhookRequest {
   rawBody: string
@@ -52,6 +62,8 @@ export interface VoiceEngine {
   deleteAgent(providerAgentId: string): Promise<void>
   importNumber(twilioSid: string, e164: string): Promise<{ providerNumberId: string }>
   attachNumber(providerNumberId: string, providerAgentId: string): Promise<void>
+  /** Unassign the agent so the number stops answering (cap enforcement). */
+  detachNumber(providerNumberId: string): Promise<void>
   startOutboundCall(
     providerAgentId: string,
     toE164: string,
@@ -77,6 +89,8 @@ export interface VoiceEngine {
     tagName: string
     attrs: Record<string, string>
   }
+  /** All provider calls started in [afterUnix, beforeUnix) — nightly reconciliation. */
+  listCalls(afterUnix: number, beforeUnix: number): Promise<ProviderCall[]>
   verifyWebhook(req: WebhookRequest): boolean
   normalizeCallEvent(payload: unknown): CallEvent
   /**

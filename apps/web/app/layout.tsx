@@ -1,10 +1,44 @@
 import type { ReactNode } from 'react'
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
+import { activeOrg, currentUsage } from '../lib/org'
+import { userClient } from '../lib/supabase-server'
 import './globals.css'
 
 export const metadata = { title: 'Airtalk' }
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+async function signOut() {
+  'use server'
+  const db = await userClient()
+  await db.auth.signOut()
+  redirect('/login')
+}
+
+async function UsageBanner() {
+  const org = await activeOrg()
+  if (!org) return null
+  const usage = await currentUsage(org.orgId)
+  if (!usage || usage.minutes_used < usage.minutes_cap * 0.8) return null
+
+  const over = usage.minutes_used >= usage.minutes_cap
+  const text = !over
+    ? `Heads up: ${Math.round(usage.minutes_used)} of ${usage.minutes_cap} minutes used this month.`
+    : org.overagePolicy === 'pause'
+      ? 'Minute cap reached — your agents are paused until next month or a plan upgrade.'
+      : `Minute cap reached — overage billing active (${Math.round(usage.overage_minutes)} overage minutes so far).`
+  return (
+    <div
+      className={`px-6 py-2 text-center text-sm ${
+        over ? 'bg-destructive text-white' : 'bg-amber-100 text-amber-900'
+      }`}
+    >
+      {text}
+    </div>
+  )
+}
+
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const org = await activeOrg()
   return (
     <html lang="en">
       <body className="min-h-screen bg-background text-foreground antialiased">
@@ -22,8 +56,19 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <Link href="/agents" className="text-muted-foreground hover:text-foreground">
               Agents
             </Link>
+            {org && (
+              <span className="ml-auto flex items-center gap-3 text-muted-foreground">
+                {org.name} · {org.plan.name}
+                <form action={signOut}>
+                  <button type="submit" className="underline hover:text-foreground">
+                    Sign out
+                  </button>
+                </form>
+              </span>
+            )}
           </nav>
         </header>
+        <UsageBanner />
         <main className="mx-auto max-w-4xl px-6 py-8">{children}</main>
       </body>
     </html>

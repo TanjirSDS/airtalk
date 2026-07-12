@@ -9,8 +9,17 @@ const schema = z.object({
   TWILIO_AUTH_TOKEN: z.string().min(1),
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  /** Browser-side Supabase auth (Phase 4). Client components read process.env
+   *  directly (Next.js inlines NEXT_PUBLIC_*); listed here so server code and
+   *  scripts fail fast when they're missing. */
+  NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
   /** Optional: outcome extraction (Phase 3) is skipped when absent. */
   OPENAI_API_KEY: z.string().min(1).optional(),
+  /** Optional: shared secret for /api/cron/* (Vercel sends it as a Bearer token). */
+  CRON_SECRET: z.string().min(1).optional(),
+  /** Optional: reconciliation discrepancies are reported to Sentry when set. */
+  SENTRY_DSN: z.string().url().optional(),
 })
 
 export type Env = z.infer<typeof schema>

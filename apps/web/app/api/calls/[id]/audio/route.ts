@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server'
-import { serviceClient } from '@airtalk/db'
 import { makeEngine } from '../../../../../lib/engine'
+import { userClient } from '../../../../../lib/supabase-server'
 
 export const dynamic = 'force-dynamic'
 
@@ -8,7 +8,8 @@ export const dynamic = 'force-dynamic'
 // the engine so the browser's <audio> can play /api/calls/{id}/audio.
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params
-  const { data: call } = await serviceClient()
+  // RLS-scoped: another org's call id 404s instead of leaking audio.
+  const { data: call } = await (await userClient())
     .from('calls')
     .select('provider_call_id, recording_url')
     .eq('id', id)
