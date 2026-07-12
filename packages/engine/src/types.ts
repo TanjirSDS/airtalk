@@ -26,6 +26,19 @@ export interface CallEvent {
   costCents?: number
 }
 
+export interface Voice {
+  voiceId: string
+  name: string
+  previewUrl: string | null
+  category?: string
+}
+
+export interface KnowledgeSource {
+  knowledgeId: string
+  name: string
+  type: 'url' | 'file'
+}
+
 /** Framework-agnostic view of an incoming webhook request. */
 export interface WebhookRequest {
   rawBody: string
@@ -52,6 +65,18 @@ export interface VoiceEngine {
     providerAgentId: string,
     source: { url?: string; file?: { name: string; data: Blob } }
   ): Promise<{ knowledgeId: string }>
+  listKnowledge(providerAgentId: string): Promise<KnowledgeSource[]>
+  removeKnowledge(providerAgentId: string, knowledgeId: string): Promise<void>
+  listVoices(): Promise<Voice[]>
+  /**
+   * Descriptor for the provider's in-browser test-call widget: the UI injects
+   * `scriptSrc` and renders `<tagName {...attrs}>`, never knowing the provider.
+   */
+  testWidgetEmbed(providerAgentId: string): {
+    scriptSrc: string
+    tagName: string
+    attrs: Record<string, string>
+  }
   verifyWebhook(req: WebhookRequest): boolean
   normalizeCallEvent(payload: unknown): CallEvent
 }

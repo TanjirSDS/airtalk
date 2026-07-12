@@ -1,5 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import type { AgentConfig, CallEvent, VoiceEngine, WebhookRequest } from './types'
+import type {
+  AgentConfig,
+  CallEvent,
+  KnowledgeSource,
+  Voice,
+  VoiceEngine,
+  WebhookRequest,
+} from './types'
 
 // Endpoint paths verified against https://elevenlabs.io/docs/eleven-agents/api-reference
 // on 2026-07-12. Payload details marked VERIFY below must be confirmed against a
@@ -138,7 +145,8 @@ export class ElevenLabsEngine implements VoiceEngine {
       throw new Error('addKnowledge needs url or file')
     }
 
-    // Attach the document to the agent's prompt.knowledge_base list. VERIFY shape in Phase 2.
+    // Attach to prompt.knowledge_base — entry shape {type,id,name} verified against
+    // KnowledgeBaseLocator docs 2026-07-12 (usage_mode optional, defaults 'auto').
     const agent = await this.req('GET', `/v1/convai/agents/${providerAgentId}`)
     const existing = agent.conversation_config?.agent?.prompt?.knowledge_base ?? []
     await this.req('PATCH', `/v1/convai/agents/${providerAgentId}`, {
@@ -154,6 +162,41 @@ export class ElevenLabsEngine implements VoiceEngine {
       },
     })
     return { knowledgeId: doc.id as string }
+  }
+
+  async listKnowledge(providerAgentId: string): Promise<KnowledgeSource[]> {
+    const agent = await this.req('GET', `/v1/convai/agents/${providerAgentId}`)
+    const entries: any[] = agent.conversation_config?.agent?.prompt?.knowledge_base ?? []
+    return entries.map((e) => ({ knowledgeId: e.id, name: e.name, type: e.type }))
+  }
+
+  // ponytail: force=true deletes the doc even if other agents reference it and
+  // auto-detaches it everywhere — fine while docs are uploaded per-agent; switch
+  // to detach-then-delete if docs ever get shared across agents.
+  async removeKnowledge(_providerAgentId: string, knowledgeId: string) {
+    await this.req('DELETE', `/v1/convai/knowledge-base/${knowledgeId}?force=true`)
+  }
+
+  // ponytail: first page of 100 voices only; add next_page_token pagination when
+  // an account actually exceeds that.
+  async listVoices(): Promise<Voice[]> {
+    const res = await this.req('GET', '/v2/voices?page_size=100')
+    return (res.voices as any[]).map((v) => ({
+      voiceId: v.voice_id,
+      name: v.name,
+      previewUrl: v.preview_url ?? null,
+      category: v.category,
+    }))
+  }
+
+  /** Embed per https://elevenlabs.io/docs/eleven-agents/customization/widget —
+   *  NOTE: the widget needs the agent public with authentication disabled. */
+  testWidgetEmbed(providerAgentId: string) {
+    return {
+      scriptSrc: 'https://unpkg.com/@elevenlabs/convai-widget-embed',
+      tagName: 'elevenlabs-convai',
+      attrs: { 'agent-id': providerAgentId },
+    }
   }
 
   /**

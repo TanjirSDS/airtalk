@@ -67,3 +67,23 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   payload during Phase 1 acceptance.
 - Single env.ts lives in packages/db/src/env.ts (lazy getEnv() so Vercel builds
   without secrets); engine gets keys via constructor, never reads env.
+
+### Phase 2 agents UI (2026-07-12)
+- Voices list: GET /v2/voices (current endpoint; paginated, page_size max 100 —
+  engine reads first page only for now). Fields: voice_id, name, preview_url, category.
+- Test widget: `<elevenlabs-convai agent-id>` + script
+  https://unpkg.com/@elevenlabs/convai-widget-embed. Requires the agent PUBLIC with
+  auth disabled. Exposed provider-neutrally via VoiceEngine.testWidgetEmbed()
+  (descriptor {scriptSrc, tagName, attrs}); the React component knows no provider.
+- Knowledge base: DELETE /v1/convai/knowledge-base/{id}?force=true deletes AND
+  auto-detaches from dependent agents (so removeKnowledge needs no manual detach).
+  Attachment entry shape {type, id, name} verified (usage_mode optional, default 'auto').
+- agents.config and agent_config_versions.config store
+  { template, profile, agentConfig } — keeping the BusinessProfile is what lets the
+  edit page re-run the template and rollback restore the form. Rollback re-applies
+  via adapter and APPENDS a new version row (history is append-only, rule 4).
+  Bootstrap-era agents (plain AgentConfig in config) render read-only in the UI.
+- Templates are browser-safe via the '@airtalk/engine/templates' subpath export
+  (pure TS, no node/provider imports) so client components can use TEMPLATE_INFO.
+- Rule 1 is now machine-enforced: root eslint.config.mjs no-restricted-imports
+  blocks elevenlabs imports outside packages/engine (`npm run lint`).
