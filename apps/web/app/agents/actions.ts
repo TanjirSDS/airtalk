@@ -1,7 +1,14 @@
 'use server'
 
 import { getEnv, serviceClient, type SupabaseClient } from '@airtalk/db'
-import { buildAgentConfig, type BusinessProfile, type TemplateKey } from '@airtalk/engine/templates'
+import {
+  applySuggestionToProfile,
+  buildAgentConfig,
+  type BusinessProfile,
+  type SuggestionPayload,
+  type SuggestionType,
+  type TemplateKey,
+} from '@airtalk/engine/templates'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { calcomBookingTool, listEventTypes } from '../../lib/calcom'
@@ -135,6 +142,77 @@ export async function rollbackAgentAction(agentId: string, version: number) {
   if (updErr) throw new Error(updErr.message)
   await insertVersion(db, agentId, stored)
   revalidatePath(`/agents/${agentId}`)
+}
+
+/**
+ * Phase 8: apply reviewed suggestions (one or a batch). All selected rows merge
+ * into the profile, the adapter gets ONE update, and ONE new version row is
+ * appended — so a batch-apply is a single rollback target. Rows that can't
+ * merge (kb_gaps, duplicates) are skipped, not failed.
+ */
+export async function applySuggestionsAction(agentId: string, formData: FormData) {
+  const db = await userClient()
+  const org = await requireOrg()
+  if (!org.plan.adaptiveEnabled) throw new Error('Adaptive learning requires the Pro plan')
+  const ids = (formData.getAll('id') as string[]).filter(Boolean)
+  if (!ids.length) throw new Error('No suggestions selected')
+  // The single-card FAQ form lets the owner edit the drafted answer before applying.
+  const answerOverride = ids.length === 1 ? (formData.get('answer') as string | null)?.trim() : null
+
+  const agent = await getAgentRow(db, agentId)
+  const stored = agent.config as StoredAgentConfig | null
+  if (!stored?.profile) throw new Error('This agent has no editable business profile')
+
+  const { data: rows, error } = await db
+    .from('agent_suggestions')
+    .select('id, type, suggestion')
+    .eq('agent_id', agentId)
+    .eq('status', 'pending')
+    .in('id', ids)
+  if (error) throw new Error(error.message)
+
+  let profile = stored.profile
+  const applied: string[] = []
+  for (const row of rows ?? []) {
+    const payload: SuggestionPayload = { ...(row.suggestion as SuggestionPayload) }
+    if (answerOverride) payload.a = answerOverride
+    const merged = applySuggestionToProfile(profile, row.type as SuggestionType, payload)
+    if (merged) {
+      profile = merged
+      applied.push(row.id)
+    }
+  }
+  if (!applied.length) {
+    throw new Error('Nothing could be applied — knowledge gaps need information only you can add')
+  }
+
+  const agentConfig = buildAgentConfig(stored.template, profile)
+  await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
+  const newStored: StoredAgentConfig = { template: stored.template, profile, agentConfig }
+  const { error: updErr } = await db
+    .from('agents')
+    .update({ name: agentConfig.name, config: newStored })
+    .eq('id', agentId)
+  if (updErr) throw new Error(updErr.message)
+  const version = await insertVersion(db, agentId, newStored)
+  const { error: markErr } = await db
+    .from('agent_suggestions')
+    .update({ status: 'applied', applied_version: version })
+    .in('id', applied)
+  if (markErr) throw new Error(markErr.message)
+  revalidatePath(`/agents/${agentId}/learning`)
+  revalidatePath(`/agents/${agentId}`)
+}
+
+export async function dismissSuggestionAction(agentId: string, suggestionId: string) {
+  const db = await userClient()
+  const { error } = await db
+    .from('agent_suggestions')
+    .update({ status: 'dismissed' })
+    .eq('id', suggestionId)
+    .eq('status', 'pending')
+  if (error) throw new Error(error.message)
+  revalidatePath(`/agents/${agentId}/learning`)
 }
 
 export async function addKnowledgeAction(agentId: string, formData: FormData) {

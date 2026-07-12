@@ -8,6 +8,13 @@ import { receptionist } from './receptionist'
 import type { BusinessProfile } from './shared'
 
 export type { BusinessProfile, GreetingStyle } from './shared'
+export {
+  applySuggestionToProfile,
+  SUGGESTION_TYPES,
+  suggestionTitle,
+  type SuggestionPayload,
+  type SuggestionType,
+} from './merge'
 
 export const templates = {
   receptionist,

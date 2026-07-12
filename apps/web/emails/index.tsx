@@ -137,3 +137,43 @@ export function WeeklySummaryEmail(p: WeeklySummaryProps): ReactElement {
     </Shell>
   )
 }
+
+export interface AgentLearningProps {
+  orgName: string
+  /** One entry per agent that got suggestions this week. */
+  agents: { agentId: string; agentName: string; titles: string[] }[]
+  totalSuggestions: number
+  appUrl: string
+}
+
+/** Phase 8: weekly "your agent learned" digest. Suggestions always start
+ *  pending (there is no auto-apply), so the email lists them for review. */
+export function AgentLearningEmail(p: AgentLearningProps): ReactElement {
+  return (
+    <Shell preview={`${p.totalSuggestions} new suggestions from last week's calls`}>
+      <Heading as="h2">
+        Your agent learned {p.totalSuggestions} new thing{p.totalSuggestions === 1 ? '' : 's'} this week
+      </Heading>
+      <Text>
+        From last week&apos;s calls for <strong>{p.orgName}</strong>, Airtalk drafted improvements
+        to your agent{p.agents.length === 1 ? '' : 's'}. Nothing changes until you review and
+        apply them.
+      </Text>
+      {p.agents.map((a) => (
+        <div key={a.agentId}>
+          <Text style={{ marginBottom: 4 }}>
+            <strong>{a.agentName}</strong>
+          </Text>
+          {a.titles.slice(0, 5).map((t, i) => (
+            <Text key={i} style={{ margin: '2px 0' }}>
+              • {t}
+            </Text>
+          ))}
+          <Text>
+            <Link href={`${p.appUrl}/agents/${a.agentId}/learning`}>Review and apply →</Link>
+          </Text>
+        </div>
+      ))}
+    </Shell>
+  )
+}
