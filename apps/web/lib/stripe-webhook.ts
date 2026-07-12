@@ -1,6 +1,7 @@
 import type Stripe from 'stripe'
 import type { SupabaseClient } from '@airtalk/db'
 import type { VoiceEngine } from '@airtalk/engine'
+import { emit } from './events'
 import { currentPeriodUsage, resumeOrgAgents } from './usage'
 
 export interface StripeWebhookDeps {
@@ -78,12 +79,18 @@ export async function handleStripeWebhook(
     case 'invoice.payment_failed': {
       const invoice = event.data.object as Stripe.Invoice
       // Start the 7-day grace clock exactly once — Stripe's dunning retries
-      // fire this event repeatedly and must not reset the window.
-      await deps.db
+      // fire this event repeatedly and must not reset the window. The .is
+      // guard also means the owner email below fires once per failure, not
+      // once per retry.
+      const { data: marked } = await deps.db
         .from('orgs')
         .update({ payment_failed_at: new Date().toISOString() })
         .eq('stripe_customer_id', invoice.customer as string)
         .is('payment_failed_at', null)
+        .select('id')
+      for (const org of marked ?? []) {
+        await emit('billing/payment-failed', { orgId: org.id })
+      }
       break
     }
 

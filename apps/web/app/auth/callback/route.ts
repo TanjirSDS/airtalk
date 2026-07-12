@@ -11,6 +11,10 @@ export async function GET(req: NextRequest) {
   const code = searchParams.get('code')
   const tokenHash = searchParams.get('token_hash')
   const type = searchParams.get('type') as EmailOtpType | null
+  // Signup links land back in the flow (?next=/signup/org). Same-origin paths
+  // only — anything else would be an open redirect.
+  const nextParam = searchParams.get('next')
+  const next = nextParam?.startsWith('/') && !nextParam.startsWith('//') ? nextParam : '/dashboard'
 
   const { error } = code
     ? await supabase.auth.exchangeCodeForSession(code)
@@ -21,5 +25,5 @@ export async function GET(req: NextRequest) {
   if (error) {
     return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(error.message)}`)
   }
-  return NextResponse.redirect(`${origin}/dashboard`)
+  return NextResponse.redirect(`${origin}${next}`)
 }

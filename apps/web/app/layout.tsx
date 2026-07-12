@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 import Link from 'next/link'
+import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { exitViewAsAction } from './admin/actions'
 import { graceDaysLeft } from '../lib/billing-math'
 import { activeOrg, currentUsage } from '../lib/org'
 import { userClient } from '../lib/supabase-server'
@@ -56,6 +58,52 @@ async function UsageBanner() {
   )
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  db: 'the dashboard database',
+  stripe: 'billing (Stripe)',
+  elevenlabs: 'the voice service (ElevenLabs)',
+  elevenlabs_status: 'the voice service (ElevenLabs)',
+  twilio_status: 'the phone network (Twilio)',
+}
+
+/** Rows the 5-minute status-poll job marked down within the last hour. */
+async function IncidentBanner() {
+  const org = await activeOrg()
+  if (!org) return null
+  const db = await userClient()
+  const cutoff = new Date(Date.now() - 3_600_000).toISOString()
+  const { data } = await db
+    .from('provider_status')
+    .select('provider')
+    .eq('ok', false)
+    .gte('checked_at', cutoff)
+  if (!data?.length) return null
+  const names = [...new Set(data.map((r) => PROVIDER_LABELS[r.provider] ?? r.provider))]
+  return (
+    <div className="bg-amber-100 px-6 py-2 text-center text-sm text-amber-900">
+      Service disruption affecting {names.join(' and ')} — calls or billing may be delayed while we
+      recover.
+    </div>
+  )
+}
+
+async function AdminViewBanner() {
+  const jar = await cookies()
+  if (!jar.get('admin-view-org')) return null
+  const org = await activeOrg()
+  if (org?.role !== 'admin') return null
+  return (
+    <div className="flex items-center justify-center gap-3 bg-violet-700 px-6 py-2 text-center text-sm text-white">
+      Admin view: {org.name}
+      <form action={exitViewAsAction}>
+        <button type="submit" className="underline">
+          Exit
+        </button>
+      </form>
+    </div>
+  )
+}
+
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const org = await activeOrg()
   return (
@@ -90,6 +138,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             )}
           </nav>
         </header>
+        <AdminViewBanner />
+        <IncidentBanner />
         <DunningBanner />
         <UsageBanner />
         <main className="mx-auto max-w-4xl px-6 py-8">{children}</main>

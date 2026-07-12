@@ -16,7 +16,8 @@
     "seed-calls": "tsx scripts/seed-calls.ts",
     "seed-orgs": "tsx scripts/seed-orgs.ts",
     "stripe-setup": "tsx scripts/stripe-setup.ts",
-    "stripe-acceptance": "tsx scripts/stripe-acceptance.ts"
+    "stripe-acceptance": "tsx scripts/stripe-acceptance.ts",
+    "seed-admin": "tsx scripts/seed-admin.ts"
   },
   "dependencies": {
     "@airtalk/db": "*",

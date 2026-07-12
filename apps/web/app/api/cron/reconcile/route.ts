@@ -8,12 +8,13 @@ import { stripeClient } from '../../../../lib/stripe'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300 // a day of calls can take a few provider pages
 
-// Vercel cron (vercel.json) hits this nightly with `Authorization: Bearer $CRON_SECRET`.
+// Phase 6: the schedule moved to Inngest (reconcile-daily in lib/jobs.ts); this
+// route stays as a manual ops trigger. Fails closed — no CRON_SECRET, no access.
 // Reconciliation first (rule 5 rewrites usage), then billing consumes the fresh
 // numbers: overage minutes → Stripe meter, expired dunning grace → pause.
 export async function GET(req: NextRequest) {
   const secret = getEnv().CRON_SECRET
-  if (secret && req.headers.get('authorization') !== `Bearer ${secret}`) {
+  if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`) {
     return new Response('unauthorized', { status: 401 })
   }
   const db = serviceClient()

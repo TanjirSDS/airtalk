@@ -43,14 +43,16 @@ async function ensureCustomer(
   return customer.id
 }
 
-/** First subscription for an org goes through Checkout. Returns the session URL. */
+/** First subscription for an org goes through Checkout. Returns the session URL.
+ *  paths override where Stripe sends the customer back (signup flow vs billing page). */
 export async function startCheckout(
   db: SupabaseClient,
   stripe: Stripe,
   orgId: string,
   planId: string,
   interval: BillingInterval,
-  origin: string
+  origin: string,
+  paths?: { success?: string; cancel?: string }
 ): Promise<string> {
   const org = await getOrg(db, orgId)
   const plan = await getPlan(db, planId)
@@ -71,8 +73,8 @@ export async function startCheckout(
     client_reference_id: orgId,
     line_items: lineItems,
     subscription_data: { metadata: { org_id: orgId } },
-    success_url: `${origin}/billing?checkout=success`,
-    cancel_url: `${origin}/billing`,
+    success_url: `${origin}${paths?.success ?? '/billing?checkout=success'}`,
+    cancel_url: `${origin}${paths?.cancel ?? '/billing'}`,
   })
   if (!session.url) throw new Error('Stripe returned no checkout URL')
   return session.url

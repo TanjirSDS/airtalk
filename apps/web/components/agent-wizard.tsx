@@ -17,7 +17,7 @@ import { cn } from '../lib/utils'
 
 const STEPS = ['Template', 'Business info', 'Voice', 'Review'] as const
 
-export function AgentWizard({ voices }: { voices: Voice[] }) {
+export function AgentWizard({ voices, redirectTo }: { voices: Voice[]; redirectTo?: string }) {
   const [step, setStep] = useState(0)
   const [template, setTemplate] = useState<TemplateKey>('receptionist')
   const [profile, setProfile] = useState<FormProfile>(EMPTY_PROFILE)
@@ -32,7 +32,7 @@ export function AgentWizard({ voices }: { voices: Voice[] }) {
   function create() {
     setError(null)
     startTransition(async () => {
-      const res = await createAgentAction({ template, profile: { ...clean, voiceId } })
+      const res = await createAgentAction({ template, profile: { ...clean, voiceId }, redirectTo })
       if (res?.error) setError(res.error) // on success the action redirects
     })
   }

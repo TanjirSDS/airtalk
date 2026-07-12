@@ -195,6 +195,11 @@ export class ElevenLabsEngine implements VoiceEngine {
     }))
   }
 
+  /** GET /v1/user — free, no credits consumed; the health check's reachability probe. */
+  async ping(): Promise<void> {
+    await this.req('GET', '/v1/user')
+  }
+
   /** Embed per https://elevenlabs.io/docs/eleven-agents/customization/widget —
    *  NOTE: the widget needs the agent public with authentication disabled. */
   testWidgetEmbed(providerAgentId: string) {
