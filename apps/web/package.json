@@ -23,6 +23,7 @@
     "clsx": "^2.1.1",
     "inngest": "^4.12.1",
     "next": "^15",
+    "papaparse": "^5.5.4",
     "react": "^19",
     "react-dom": "^19",
     "recharts": "^3.9.2",
@@ -33,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "typescript": "^5"

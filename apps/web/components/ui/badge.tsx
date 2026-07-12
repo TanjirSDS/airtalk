@@ -5,11 +5,12 @@ export function Badge({
   className,
   variant = 'default',
   ...props
-}: HTMLAttributes<HTMLDivElement> & { variant?: 'default' | 'secondary' | 'outline' }) {
+}: HTMLAttributes<HTMLDivElement> & { variant?: 'default' | 'secondary' | 'outline' | 'destructive' }) {
   const variants = {
     default: 'border-transparent bg-primary text-primary-foreground',
     secondary: 'border-transparent bg-secondary text-secondary-foreground',
     outline: 'text-foreground',
+    destructive: 'border-transparent bg-destructive text-white',
   }
   return (
     <div

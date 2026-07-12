@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@airtalk/db'
 import type { VoiceEngine } from '@airtalk/engine'
+import { externalNumber, recordOptOut } from './opt-out'
 import type { CallOutcome } from './outcome'
 import { recordCallUsage } from './usage'
 
@@ -48,23 +49,45 @@ export async function handleElevenLabsWebhook(
       .select('id')
       .eq('provider_call_id', ev.providerCallId)
       .maybeSingle()
-    await db.from('calls').upsert(
-      {
-        agent_id: agent?.id ?? null,
-        org_id: agent?.org_id ?? null,
-        provider_call_id: ev.providerCallId,
-        direction: ev.direction,
-        from_e164: ev.fromE164,
-        to_e164: ev.toE164,
-        started_at: ev.startedAt,
-        duration_secs: ev.durationSecs,
-        transcript: ev.transcript,
-        recording_url: ev.recordingUrl,
-        status: ev.status,
-        cost_cents: ev.costCents ?? null,
-      },
-      { onConflict: 'provider_call_id' }
-    )
+    // Phase 7: a Cal.com booking made mid-call was parked in call_bookings
+    // (the calls row didn't exist yet) — land it on the row we're writing.
+    const { data: booking } = await db
+      .from('call_bookings')
+      .select('booking_ref')
+      .eq('provider_call_id', ev.providerCallId)
+      .maybeSingle()
+
+    const { data: callRow } = await db
+      .from('calls')
+      .upsert(
+        {
+          agent_id: agent?.id ?? null,
+          org_id: agent?.org_id ?? null,
+          provider_call_id: ev.providerCallId,
+          direction: ev.direction,
+          from_e164: ev.fromE164,
+          to_e164: ev.toE164,
+          started_at: ev.startedAt,
+          duration_secs: ev.durationSecs,
+          transcript: ev.transcript,
+          recording_url: ev.recordingUrl,
+          status: ev.status,
+          cost_cents: ev.costCents ?? null,
+          booking_ref: booking?.booking_ref ?? null,
+        },
+        { onConflict: 'provider_call_id' }
+      )
+      .select('id')
+      .maybeSingle()
+
+    // Phase 7: outbound campaign call finished → flip its contact to done.
+    if (ev.direction === 'outbound') {
+      await db
+        .from('campaign_contacts')
+        .update({ status: 'done', call_id: callRow?.id ?? null })
+        .eq('provider_call_id', ev.providerCallId)
+        .eq('status', 'calling')
+    }
 
     // Phase 4: minute counting. A usage failure must not fail the webhook —
     // nightly reconciliation recomputes the period from calls anyway (rule 5).
@@ -84,6 +107,11 @@ export async function handleElevenLabsWebhook(
           .from('calls')
           .update({ outcome: result.outcome, summary: result.summary })
           .eq('provider_call_id', ev.providerCallId)
+        // Phase 7: same opt-out handling the Inngest classify path does.
+        if (result.outcome === 'opt_out' && agent?.org_id) {
+          const e164 = externalNumber({ direction: ev.direction, from_e164: ev.fromE164, to_e164: ev.toE164 })
+          if (e164) await recordOptOut(db, agent.org_id, e164).catch((e) => console.error('recordOptOut failed:', e))
+        }
       }
     }
   }

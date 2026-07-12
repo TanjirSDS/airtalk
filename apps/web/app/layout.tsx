@@ -123,6 +123,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <Link href="/agents" className="text-muted-foreground hover:text-foreground">
               Agents
             </Link>
+            <Link href="/campaigns" className="text-muted-foreground hover:text-foreground">
+              Campaigns
+            </Link>
             <Link href="/billing" className="text-muted-foreground hover:text-foreground">
               Billing
             </Link>

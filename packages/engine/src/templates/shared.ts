@@ -13,6 +13,9 @@ export interface BusinessProfile {
   escalationNumber?: string
   greetingStyle: 'professional' | 'friendly' | 'casual'
   voiceId: string
+  /** Phase 7: org has a calendar connected — the booking agent books real slots
+   *  via its check_availability_and_book tool instead of taking a message. */
+  liveBooking?: boolean
 }
 
 export type GreetingStyle = BusinessProfile['greetingStyle']
@@ -76,5 +79,6 @@ export function conductRules(p: BusinessProfile): string {
 3. Before the call ends, always capture: the caller's NAME, PHONE NUMBER, and the REASON for their call. Read the phone number back to confirm it.
 4. If you cannot help, the caller is frustrated, or they ask for a human: ${escalation}.
 5. Only state facts from the business facts section above. If you don't know, say so and take a message.
-6. Keep answers short — this is a phone call, not an essay.`
+6. Keep answers short — this is a phone call, not an essay.
+7. If the person asks not to be called again, to be removed from a list, or to stop receiving calls: comply IMMEDIATELY. Apologize once, confirm plainly that they will not be contacted again, and end the call politely. Never argue, negotiate, or try to keep them on the line.`
 }
