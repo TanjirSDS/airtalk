@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@airtalk/db'
 import type { VoiceEngine } from '@airtalk/engine'
+import type { CallOutcome } from './outcome'
 
 // Rule 2: verify signature → insert webhook_events (UNIQUE event_id, skip on
 // conflict = idempotent) → store raw payload → then process.
@@ -8,7 +9,8 @@ export async function handleElevenLabsWebhook(
   rawBody: string,
   signature: string | null,
   engine: VoiceEngine,
-  db: SupabaseClient
+  db: SupabaseClient,
+  classify?: (transcript: unknown) => Promise<CallOutcome | null>
 ): Promise<{ status: number; body: string }> {
   if (!engine.verifyWebhook({ rawBody, signature })) {
     return { status: 401, body: 'invalid signature' }
@@ -51,6 +53,15 @@ export async function handleElevenLabsWebhook(
       },
       { onConflict: 'provider_call_id' }
     )
+
+    // Phase 3: outcome extraction — best-effort, never fails the webhook.
+    const result = classify ? await classify(ev.transcript).catch(() => null) : null
+    if (result) {
+      await db
+        .from('calls')
+        .update({ outcome: result.outcome, summary: result.summary })
+        .eq('provider_call_id', ev.providerCallId)
+    }
   }
 
   await db

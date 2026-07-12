@@ -199,6 +199,23 @@ export class ElevenLabsEngine implements VoiceEngine {
     }
   }
 
+  /** GET /v1/convai/conversations/{id}/audio — verified against docs 2026-07-12. */
+  // ponytail: buffered, not streamed — call recordings are a few MB and a
+  // Content-Length makes <audio> seeking reliable; stream + Range support if
+  // recordings ever get long.
+  async fetchRecording(providerCallId: string) {
+    const res = await fetch(`${BASE}/v1/convai/conversations/${providerCallId}/audio`, {
+      headers: { 'xi-api-key': this.opts.apiKey },
+    })
+    if (!res.ok) {
+      throw new Error(`ElevenLabs GET conversation audio → ${res.status}: ${await res.text()}`)
+    }
+    return {
+      audio: await res.arrayBuffer(),
+      contentType: res.headers.get('content-type') ?? 'audio/mpeg',
+    }
+  }
+
   /**
    * Header format: `elevenlabs-signature: t=<unix>,v0=<hex hmac-sha256 of "<t>.<rawBody>">`.
    * VERIFY against a live webhook in Phase 1 (docs point at SDK constructEvent).

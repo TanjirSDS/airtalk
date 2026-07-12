@@ -79,4 +79,9 @@ export interface VoiceEngine {
   }
   verifyWebhook(req: WebhookRequest): boolean
   normalizeCallEvent(payload: unknown): CallEvent
+  /**
+   * Raw recording audio for a finished call, served to the UI through an app
+   * route (providers like ElevenLabs expose audio via API, not a public URL).
+   */
+  fetchRecording(providerCallId: string): Promise<{ audio: ArrayBuffer; contentType: string }>
 }

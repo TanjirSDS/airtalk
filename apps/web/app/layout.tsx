@@ -13,6 +13,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <Link href="/" className="font-semibold">
               Airtalk
             </Link>
+            <Link href="/dashboard" className="text-muted-foreground hover:text-foreground">
+              Dashboard
+            </Link>
+            <Link href="/calls" className="text-muted-foreground hover:text-foreground">
+              Calls
+            </Link>
             <Link href="/agents" className="text-muted-foreground hover:text-foreground">
               Agents
             </Link>
