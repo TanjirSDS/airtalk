@@ -1,4 +1,3 @@
-import { serviceClient } from '@airtalk/db'
 import Link from 'next/link'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -6,6 +5,7 @@ import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
 import { applyCallFilters, formatDuration, joinedAgentName, parseCallFilters } from '../../lib/call-filters'
 import { OUTCOMES } from '../../lib/outcome'
+import { userClient } from '../../lib/supabase-server'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,7 +19,7 @@ export default async function CallsPage({
   const params = await searchParams
   const filters = parseCallFilters(params)
   const page = Math.max(1, Number(params.page) || 1)
-  const db = serviceClient()
+  const db = await userClient()
 
   const [{ data: agents }, { data: calls, count, error }] = await Promise.all([
     db.from('agents').select('id, name').order('name'),

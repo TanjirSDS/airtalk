@@ -112,3 +112,49 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   provider_call_id seed-conv-NN, idempotent).
 - Migration 0003 NOT applied anywhere yet: no Airtalk Supabase project or
   .env.local exists as of Phase 3 — apply 0001–0003 when the stack is stood up.
+
+### Phase 4 tenants + usage (2026-07-12)
+- 0004: plans (text ids starter/growth/pro, seeded), orgs, org_members,
+  org_id on agents/phone_numbers/calls. webhook_events stays org-less (events
+  arrive before the tenant is known); the calls rows derived from them carry
+  org_id via the agent.
+- Usage: usage_periods pk (org_id, period_start=UTC month). record_call_usage()
+  is ONE insert..on conflict statement returning prev/new/cap so callers detect
+  threshold crossings without a second read; recompute_usage() rewrites a period
+  from the calls table (rule 5). Both revoked from authenticated — members
+  could otherwise spoof usage via rpc.
+- RLS: is_org_member() security definer (avoids org_members policy recursion);
+  service role bypasses via BYPASSRLS. App reads/writes moved from
+  serviceClient to an RLS-scoped userClient (@supabase/ssr, lib/supabase-server.ts)
+  — Postgres does the org filtering, pages barely changed. serviceClient
+  remains ONLY in webhooks/cron/scripts. Rows with org_id null are invisible
+  to members; npm run seed-orgs adopts them into org A.
+- Auth: magic-link only (signInWithOtp shouldCreateUser:false — no signup
+  funnel). middleware.ts refreshes the session cookie and gates everything
+  except /login, /auth, /api/{webhooks,cron,health}. Active org = first
+  membership, resolved per-request in lib/org.ts (React cache()); add an
+  org-switcher cookie when someone actually has two orgs.
+- Webhook now checks call pre-existence before upsert: reconciliation may have
+  inserted the call first, and usage must be counted exactly once. A usage/rpc
+  failure never fails the webhook (reconciliation self-heals).
+- Enforcement is crossing-based (fires once): 80% → console.warn (email later);
+  100% → per overage_policy: 'pause' sets agents.status=paused + detaches
+  numbers at the provider, 'overage' just accumulates overage_minutes. Detach =
+  PATCH /v1/convai/phone-numbers/{id} {agent_id: null} (nullable per docs
+  2026-07-12) — phone_numbers rows keep agent_id so resume can re-attach.
+  Banner in layout.tsx at ≥80%/≥100%.
+- Reconciliation: engine.listCalls uses GET /v1/convai/conversations with
+  call_start_{after,before}_unix + cursor pagination (verified 2026-07-12).
+  Diff matches by provider_call_id, NOT started_at window (clock skew would
+  fake missing calls). /api/cron/reconcile (vercel.json in apps/web, 03:00 UTC,
+  Bearer CRON_SECRET) inserts missing calls, fixes durations, recompute_usage
+  per affected org+month, re-enforces caps. Discrepancy > 2 min →
+  Sentry.captureMessage (SENTRY_DSN optional; instrumentation.ts no-ops without).
+- Plan gates: max_agents enforced in createAgentAction (wizard page shows the
+  limit as UX only); kb_enabled replaced lib/flags.ts KNOWLEDGE_BASE_ENABLED.
+- New VoiceEngine methods: detachNumber(providerNumberId),
+  listCalls(afterUnix, beforeUnix) → ProviderCall[].
+- RLS isolation + live usage-math tests in packages/db/src/rls.test.ts —
+  auto-skip without .env.local (still no Supabase project as of Phase 4).
+  Acceptance items needing live infra (webhook-outage reconciliation vs
+  provider dashboard, cap-crossing pause) remain to be run after `seed-orgs`.

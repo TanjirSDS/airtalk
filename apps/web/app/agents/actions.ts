@@ -1,16 +1,27 @@
 'use server'
 
-import { serviceClient } from '@airtalk/db'
+import type { SupabaseClient } from '@airtalk/db'
 import { buildAgentConfig, type BusinessProfile, type TemplateKey } from '@airtalk/engine/templates'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { makeEngine } from '../../lib/engine'
+import { activeOrg, type ActiveOrg } from '../../lib/org'
+import { userClient } from '../../lib/supabase-server'
 import type { StoredAgentConfig } from '../../lib/types'
+
+// Phase 4: all DB access here goes through the RLS-scoped user client, so a
+// member can only ever touch their own org's rows — no manual org checks.
+
+async function requireOrg(): Promise<ActiveOrg> {
+  const org = await activeOrg()
+  if (!org) throw new Error('You are not a member of any organization')
+  return org
+}
 
 // Rule 4: every save appends a version row; version numbers are per-agent.
 // ponytail: read-max+1 has a race under concurrent saves — the unique(agent_id,
 // version) constraint turns that into an error instead of silent corruption.
-async function insertVersion(db: ReturnType<typeof serviceClient>, agentId: string, config: StoredAgentConfig) {
+async function insertVersion(db: SupabaseClient, agentId: string, config: StoredAgentConfig) {
   const { data } = await db
     .from('agent_config_versions')
     .select('version')
@@ -26,22 +37,33 @@ async function insertVersion(db: ReturnType<typeof serviceClient>, agentId: stri
   return version
 }
 
-async function getAgentRow(db: ReturnType<typeof serviceClient>, id: string) {
+async function getAgentRow(db: SupabaseClient, id: string) {
   const { data, error } = await db.from('agents').select('*').eq('id', id).single()
   if (error) throw new Error(error.message)
   return data
 }
 
 export async function createAgentAction(input: { template: TemplateKey; profile: BusinessProfile }) {
-  const db = serviceClient()
+  const db = await userClient()
   let id: string
   try {
+    const org = await requireOrg()
+    // Plan limit (Phase 4). The wizard page also checks — this is the real gate.
+    const { count } = await db
+      .from('agents')
+      .select('id', { count: 'exact', head: true })
+      .eq('org_id', org.orgId)
+    if ((count ?? 0) >= org.plan.maxAgents) {
+      throw new Error(`Your ${org.plan.name} plan allows ${org.plan.maxAgents} agent(s)`)
+    }
+
     const agentConfig = buildAgentConfig(input.template, input.profile)
     const { providerAgentId } = await makeEngine().createAgent(agentConfig)
     const stored: StoredAgentConfig = { template: input.template, profile: input.profile, agentConfig }
     const { data, error } = await db
       .from('agents')
       .insert({
+        org_id: org.orgId,
         name: agentConfig.name,
         provider: 'elevenlabs',
         provider_agent_id: providerAgentId,
@@ -62,7 +84,7 @@ export async function updateAgentAction(
   agentId: string,
   input: { template: TemplateKey; profile: BusinessProfile }
 ) {
-  const db = serviceClient()
+  const db = await userClient()
   try {
     const agent = await getAgentRow(db, agentId)
     const agentConfig = buildAgentConfig(input.template, input.profile)
@@ -83,7 +105,7 @@ export async function updateAgentAction(
 
 /** Re-applies an old version via the adapter and appends it as the newest version. */
 export async function rollbackAgentAction(agentId: string, version: number) {
-  const db = serviceClient()
+  const db = await userClient()
   const agent = await getAgentRow(db, agentId)
   const { data: old, error } = await db
     .from('agent_config_versions')
@@ -104,7 +126,9 @@ export async function rollbackAgentAction(agentId: string, version: number) {
 }
 
 export async function addKnowledgeAction(agentId: string, formData: FormData) {
-  const db = serviceClient()
+  const db = await userClient()
+  const org = await requireOrg()
+  if (!org.plan.kbEnabled) throw new Error('Knowledge base requires the Growth plan or higher')
   const agent = await getAgentRow(db, agentId)
   const url = (formData.get('url') as string | null)?.trim()
   const file = formData.get('file') as File | null
@@ -119,7 +143,7 @@ export async function addKnowledgeAction(agentId: string, formData: FormData) {
 }
 
 export async function removeKnowledgeAction(agentId: string, knowledgeId: string) {
-  const db = serviceClient()
+  const db = await userClient()
   const agent = await getAgentRow(db, agentId)
   await makeEngine().removeKnowledge(agent.provider_agent_id, knowledgeId)
   revalidatePath(`/agents/${agentId}`)

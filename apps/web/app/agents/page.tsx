@@ -1,5 +1,5 @@
-import { serviceClient } from '@airtalk/db'
 import Link from 'next/link'
+import { userClient } from '../../lib/supabase-server'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
@@ -8,7 +8,7 @@ import type { StoredAgentConfig } from '../../lib/types'
 export const dynamic = 'force-dynamic' // hits Supabase; never prerender at build
 
 export default async function AgentsPage() {
-  const { data: agents, error } = await serviceClient()
+  const { data: agents, error } = await (await userClient())
     .from('agents')
     .select('id, name, status, created_at, config')
     .order('created_at', { ascending: false })

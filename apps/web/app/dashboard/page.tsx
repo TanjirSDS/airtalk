@@ -1,5 +1,6 @@
-import { serviceClient, type SupabaseClient } from '@airtalk/db'
+import type { SupabaseClient } from '@airtalk/db'
 import { DashboardCharts, type DayPoint, type WeekPoint } from '../../components/dashboard-charts'
+import { userClient } from '../../lib/supabase-server'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card'
 import { formatDuration } from '../../lib/call-filters'
 import { OUTCOMES } from '../../lib/outcome'
@@ -15,15 +16,15 @@ interface CallRow {
   outcome: string | null
 }
 
-// The one dashboard query. orgId is threaded now so Phase 4 (org_id + RLS)
-// only has to pass it — every stat below derives from this result set.
-async function fetchRecentCalls(db: SupabaseClient, orgId?: string): Promise<CallRow[]> {
+// The one dashboard query — RLS on the user client scopes it to the member's org.
+async function fetchRecentCalls(db: SupabaseClient): Promise<CallRow[]> {
   const since = new Date()
   since.setUTCDate(since.getUTCDate() - WEEKS * 7)
   since.setUTCHours(0, 0, 0, 0)
-  let q = db.from('calls').select('started_at, duration_secs, outcome').gte('started_at', since.toISOString())
-  if (orgId) q = q.eq('org_id', orgId) // column lands in Phase 4
-  const { data, error } = await q
+  const { data, error } = await db
+    .from('calls')
+    .select('started_at, duration_secs, outcome')
+    .gte('started_at', since.toISOString())
   if (error) throw new Error(error.message)
   return data
 }
@@ -43,7 +44,7 @@ function weekStart(d: Date) {
 export default async function DashboardPage() {
   // ponytail: aggregates computed in JS over one 8-week fetch — move to a SQL
   // view when call volume makes the row transfer noticeable.
-  const calls = await fetchRecentCalls(serviceClient())
+  const calls = await fetchRecentCalls(await userClient())
   const now = new Date()
 
   const today = utcDayKey(now)

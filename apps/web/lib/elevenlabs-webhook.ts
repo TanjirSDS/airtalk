@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@airtalk/db'
 import type { VoiceEngine } from '@airtalk/engine'
 import type { CallOutcome } from './outcome'
+import { recordCallUsage } from './usage'
 
 // Rule 2: verify signature → insert webhook_events (UNIQUE event_id, skip on
 // conflict = idempotent) → store raw payload → then process.
@@ -34,12 +35,20 @@ export async function handleElevenLabsWebhook(
     const ev = engine.normalizeCallEvent(payload)
     const { data: agent } = await db
       .from('agents')
-      .select('id')
+      .select('id, org_id')
       .eq('provider_agent_id', payload.data.agent_id)
+      .maybeSingle()
+    // Reconciliation may have inserted this call already — only count usage
+    // for rows this webhook actually creates, or minutes double-count.
+    const { data: existingCall } = await db
+      .from('calls')
+      .select('id')
+      .eq('provider_call_id', ev.providerCallId)
       .maybeSingle()
     await db.from('calls').upsert(
       {
         agent_id: agent?.id ?? null,
+        org_id: agent?.org_id ?? null,
         provider_call_id: ev.providerCallId,
         direction: ev.direction,
         from_e164: ev.fromE164,
@@ -53,6 +62,14 @@ export async function handleElevenLabsWebhook(
       },
       { onConflict: 'provider_call_id' }
     )
+
+    // Phase 4: minute counting. A usage failure must not fail the webhook —
+    // nightly reconciliation recomputes the period from calls anyway (rule 5).
+    if (!existingCall && agent?.org_id && ev.durationSecs > 0) {
+      await recordCallUsage(db, engine, agent.org_id, ev.durationSecs).catch((e) =>
+        console.error('recordCallUsage failed:', e)
+      )
+    }
 
     // Phase 3: outcome extraction — best-effort, never fails the webhook.
     const result = classify ? await classify(ev.transcript).catch(() => null) : null

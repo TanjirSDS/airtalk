@@ -1,16 +1,16 @@
-import { serviceClient } from '@airtalk/db'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { CallPlayer } from '../../../components/call-player'
 import { Badge } from '../../../components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card'
 import { formatDuration } from '../../../lib/call-filters'
+import { userClient } from '../../../lib/supabase-server'
 
 export const dynamic = 'force-dynamic'
 
 export default async function CallPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const { data: call, error } = await serviceClient()
+  const { data: call, error } = await (await userClient())
     .from('calls')
     .select('*, agents(name)')
     .eq('id', id)
