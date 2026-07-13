@@ -1027,3 +1027,113 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   runs); a simulation Run round-trips against a real EL agent (confirm the nested
   request shape on a live call) or is cleanly disabled; the "Configure QA settings"
   deep-link opens the extraction section.
+
+### Phase 17 alerting + integrations (2026-07-13)
+- 0015: alerts (metric CHECK in failure_rate/call_count/usage_pct/est_cost_cents/
+  provider_down, operator CHECK gt/gte/lt/lte, threshold numeric, window_mins,
+  agent_id nullable FK→agents ON DELETE CASCADE, channels jsonb {emails[],
+  endpointIds[]}, enabled, cooldown_mins) + alert_events (alert_id, fired_at,
+  value, payload) + webhook_endpoints (url, secret, events jsonb, enabled) +
+  webhook_deliveries (endpoint_id, event_type, event_key, payload, status CHECK
+  pending/ok/failed/dead, attempts, last_attempt_at, UNIQUE(endpoint_id,event_key))
+  + orgs.integration_interest jsonb. RLS: alerts + webhook_endpoints member rw
+  (is_org_member, already ORs is_admin); alert_events + webhook_deliveries have NO
+  org_id (spec shape) → select-only via `exists(... is_org_member(parent.org_id))`
+  subquery, writes service-role only.
+- SCHEMA ADDITION beyond the spec's column list: alerts.last_state boolean +
+  last_fired_at timestamptz. True crossing detection ("was-below→now-above") needs
+  the previous eval's above/below state; cooldown alone can't distinguish a fresh
+  crossing from a held-above condition. last_state is the fires-once analog of
+  Phase 4's record_call_usage prev/new. Editing a rule resets last_state=false
+  (stale after a threshold change → re-arm).
+- CROSSING MATH (lib/alerts-eval.ts, pure + 12 tests): evaluateCrossing =
+  fire when conditionMet && !lastState && cooledDown; newState=conditionMet always
+  (a crossing suppressed by cooldown still arms last_state, so it won't re-fire
+  until the condition drops and re-crosses). computeMetric per metric: failure_rate
+  = % of window calls with outcome='failed' (0 when empty); call_count = row count;
+  usage_pct = minutes_used/cap ×100 (current UTC-month usage_periods); est_cost_cents
+  = window minutes × plan includedRateCentsPerMin (coarse, NO overage — rule 5, a
+  windowed alert can't know whole-period overage without double counting);
+  provider_down = count of provider_status rows ok=false & checked_at≥now-1h (same
+  "currently down" as the dashboard banner). compare() for the 4 operators.
+- EVALUATOR (lib/alerts.ts, service-role): evaluateAlert gathers inputs per metric
+  → computeMetric → compare → evaluateCrossing → persist {last_state, last_fired_at}
+  EVERY eval → on fire insert alert_events + notify. Cron alert-evaluate */15,
+  retries:0 (like status-poll — it persists state, so a retry with the pre-fire
+  snapshot would double-fire; next tick catches a crash), per-alert try/catch so one
+  bad rule can't block the rest. Email channel = new AlertEmail (emails/index.tsx,
+  Shell) via sendEmail to the alert's chosen addresses, best-effort. Webhook channel
+  = enqueueWebhookEvent(eventType 'alert.fired', eventKey=alert_event.id, the chosen
+  endpointIds). onFailure → deadLetter (Sentry), the established pattern.
+- OUTBOUND DELIVERY (lib/webhooks-out.ts — producer side of rule 2). signBody =
+  the SAME format engine.verifyWebhook parses: header `airtalk-signature:
+  t=<unix>,v0=<hex hmac-sha256("<t>.<body>")>` (own header name, EL's algorithm) —
+  webhooks-out.test asserts engine.verifyWebhook accepts our signature (offline
+  producer/consumer symmetry). enqueueWebhookEvent: one pending webhook_deliveries
+  row per target endpoint, idempotent via UNIQUE(endpoint_id,event_key) skip-on-
+  conflict (mirrors webhook_events), then emit('webhook/deliver'). Fan-out
+  (call.completed, endpointIds omitted) hits only endpoints whose events[] includes
+  the type; an explicit endpointIds list (alert.fired) delivers regardless (the
+  alert IS the subscription). emit is lazy-imported (default param) so the delivery
+  unit test never resolves the inngest package.
+- RETRY POLICY: Inngest function webhook-deliver (retries:5, event webhook/deliver)
+  calls attemptDelivery — NOT wrapped in step.run, so each Inngest retry genuinely
+  re-runs the POST and re-reads the incremented attempts. attemptDelivery signs +
+  POSTs (AbortSignal.timeout 10s), increments attempts; on 2xx→'ok'; on failure it
+  THROWS to request a backoff retry UNTIL attempts hits MAX_ATTEMPTS (5), where it
+  marks 'dead' + Sentry and returns (no throw, so no 6th run). Terminal rows
+  (ok/dead) short-circuit; a disabled endpoint marks 'failed' and returns without
+  fetching (rule 3 kill switch — re-checked per attempt, so disabling stops
+  in-flight deliveries immediately). Secrets used only for signing, never logged.
+- EMIT POINTS (rule 1: only the neutral CallEvent leaves us, never raw EL payloads):
+  (1) post-call webhook — handleElevenLabsWebhook gained an optional injected
+  emitCallCompleted(orgId, ev) (7th param, like classify/enqueueClassify so the
+  idempotency test is untouched), called after the calls upsert, wired in the route
+  to enqueueWebhookEvent('call.completed', eventKey=provider_call_id, payload=ev).
+  (2) reconcile — reconcileYesterday emits call.completed for each just-inserted
+  missing row (sparse payload: no from/to/transcript, same ceiling as Phase 7/14).
+  Both key on provider_call_id, so whichever emits first wins and the other's insert
+  is a UNIQUE no-op → reconcile can't double-send a call the webhook already sent.
+- EVENT CATALOG: outbound `call.completed` (data = CallEvent) + `alert.fired`
+  (data = {alertId, name, metric, operator, threshold, value, windowMins, firedAt}).
+  Body envelope = {type, id:eventKey, data}. Inngest internal events added:
+  `webhook/deliver` {deliveryId}. Endpoints subscribe via events jsonb
+  ['call.completed','alert.fired'].
+- CAL.COM SPLIT (item 6): org credentials moved to /integrations
+  (connectCalcomAction/disconnectCalcomAction in app/integrations/actions.ts,
+  owner-gated service write to orgs.calcom_*, key validated against /v2/me before
+  storing — the exact logic lifted out of the old per-agent action). The per-agent
+  action became setAgentBookingAction(agentId, enabled) (agents/actions.ts): reads
+  the already-stored org key, attaches/detaches the check_availability_and_book tool
+  + rebuilds the prompt with liveBooking on/off = ONE version row (rule 4). Enabling
+  errors if no org key connected. CalcomConnectForm is now a Switch in the builder's
+  Functions section (orgConnected + bookingEnabled=seed.liveBooking props); it links
+  to /integrations when unconnected. disconnect only clears the org key (agents keep
+  the tool until toggled off — noted).
+- WAITLIST MECHANISM (cheapest thing, logged): orgs.integration_interest jsonb —
+  registerInterestAction appends 'hubspot'/'salesforce' (any member; service write
+  since orgs is member-read-only). No new table. /integrations Available tab shows
+  the two cards with a Register-interest button that flips to "Interested ✓".
+- REVEAL-ONCE SECRET: /integrations never selects webhook_endpoints.secret on reads;
+  createWebhookEndpointAction generates `whsec_<24-byte hex>` and returns it ONCE to
+  the create dialog. Connected tab shows a latest-delivery status dot per endpoint
+  (from the last 200 webhook_deliveries), enable Switch (kill switch), delete.
+- UI: /alerts (tabs ?tab=alerts|history, Link tab bar) — 4 template cards prefill the
+  create/edit dialog, alerts table with enable Switch + edit/delete, history table
+  (alert, condition, value, fired-at UTC, notified-via) from alert_events with an
+  embedded alerts(name). /integrations (tabs ?tab=connected|available). Nav:
+  Alerting + Integrations inserted between QA and Billing (canonical order), new
+  hand-authored AlertIcon (bell) + IntegrationsIcon (plug) in icons.tsx. settings-rail
+  Webhook Settings placeholder now links to the live /integrations (dropped "coming
+  soon"). No plan gate on either page (YAGNI — spec didn't ask).
+- Acceptance verified OFFLINE (no Supabase/EL/Inngest/Resend env as of Phase 17):
+  typecheck + lint (provider fence intact) + build clean (/alerts 7.35kB, /integrations
+  7.3kB emit); 205 tests pass / 7 live-skip (+12 alerts-eval crossing+cooldown+metrics
+  incl. fires-once-per-crossing full cycle; +10 webhooks-out: signBody↔verifyWebhook
+  symmetry, enqueue idempotency (same event_key never queues twice), attempt ok/retry-
+  throw/dead-at-cap/kill-switch/terminal-short-circuit). LIVE acceptance still needs
+  the stack: apply 0015; seed a failure-rate alert and drive calls across the threshold
+  → fires exactly once per crossing, history shows it, email arrives (Resend test key),
+  a webhook endpoint records attempts and honors the retry→dead path; disabling an
+  endpoint stops deliveries mid-flight; org B can't read org A's alerts/endpoints/
+  deliveries (RLS); confirm a real consumer verifies our airtalk-signature.

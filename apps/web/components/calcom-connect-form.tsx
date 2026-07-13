@@ -1,57 +1,63 @@
 'use client'
 
+import Link from 'next/link'
 import { useState, useTransition } from 'react'
-import { connectCalcomAction } from '../app/agents/actions'
-import { Button } from './ui/button'
-import { Input } from './ui/input'
-import { Label } from './ui/label'
+import { setAgentBookingAction } from '../app/agents/actions'
+import { Switch } from './ui/switch'
 
+/**
+ * Per-agent "live booking" toggle in the builder's Functions section. The org's
+ * Cal.com credentials are managed on /integrations; this only flips the
+ * check_availability_and_book tool on this one agent.
+ */
 export function CalcomConnectForm({
   agentId,
-  connected,
-  eventTypeId,
+  orgConnected,
+  bookingEnabled,
 }: {
   agentId: string
-  connected: boolean
-  eventTypeId: number | null
+  orgConnected: boolean
+  bookingEnabled: boolean
 }) {
+  const [enabled, setEnabled] = useState(bookingEnabled)
   const [status, setStatus] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
-  function submit(formData: FormData) {
+  function toggle(next: boolean) {
     setStatus(null)
+    setEnabled(next) // optimistic
     startTransition(async () => {
-      const res = await connectCalcomAction(agentId, formData)
-      setStatus(res?.error ? `Error: ${res.error}` : 'Connected — this agent now books real slots.')
+      const res = await setAgentBookingAction(agentId, next)
+      if (res?.error) {
+        setEnabled(!next) // revert
+        setStatus(`Error: ${res.error}`)
+      } else {
+        setStatus(next ? 'Live booking on — this agent books real slots.' : 'Live booking off — back to message-taking.')
+      }
     })
   }
 
+  if (!orgConnected) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Connect a Cal.com calendar in{' '}
+        <Link href="/integrations" className="text-brand underline">
+          Integrations
+        </Link>{' '}
+        to let this agent book real appointments during the call.
+      </p>
+    )
+  }
+
   return (
-    <form action={submit} className="space-y-3">
-      {connected && (
-        <p className="text-sm text-emerald-700">
-          Calendar connected (event type {eventTypeId}). Saving again replaces the key.
-        </p>
-      )}
-      <div className="space-y-1">
-        <Label htmlFor="calcom-key">Cal.com API key</Label>
-        <Input id="calcom-key" name="apiKey" type="password" placeholder="cal_live_…" required />
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-sm">Book real appointments on this agent&apos;s calls</span>
+        <Switch checked={enabled} disabled={pending} onCheckedChange={toggle} />
       </div>
-      <div className="space-y-1">
-        <Label htmlFor="calcom-event-type">Event type id</Label>
-        <Input id="calcom-event-type" name="eventTypeId" type="number" min="1" required />
-        <p className="text-xs text-muted-foreground">
-          A wrong id lists your available event types in the error.
-        </p>
-      </div>
-      <Button type="submit" disabled={pending}>
-        {pending ? 'Connecting…' : connected ? 'Update connection' : 'Connect calendar'}
-      </Button>
       {status && (
-        <p className={`text-sm ${status.startsWith('Error') ? 'text-destructive' : 'text-emerald-700'}`}>
-          {status}
-        </p>
+        <p className={`text-sm ${status.startsWith('Error') ? 'text-destructive' : 'text-emerald-700'}`}>{status}</p>
       )}
-    </form>
+    </div>
   )
 }

@@ -5,6 +5,7 @@ import { handleElevenLabsWebhook } from '../../../../lib/elevenlabs-webhook'
 import { emit } from '../../../../lib/events'
 import { classifyCall } from '../../../../lib/outcome'
 import { rateLimit } from '../../../../lib/ratelimit'
+import { enqueueWebhookEvent } from '../../../../lib/webhooks-out'
 
 export async function POST(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
@@ -12,13 +13,16 @@ export async function POST(req: NextRequest) {
     return new Response('rate limited', { status: 429 })
   }
   const rawBody = await req.text() // raw body needed for HMAC verification
+  const db = serviceClient()
   const res = await handleElevenLabsWebhook(
     rawBody,
     req.headers.get('elevenlabs-signature'),
     makeEngine(),
-    serviceClient(),
+    db,
     (transcript) => classifyCall(transcript, getEnv().OPENAI_API_KEY),
-    (providerCallId) => emit('call/recorded', { providerCallId })
+    (providerCallId) => emit('call/recorded', { providerCallId }),
+    (orgId, ev) =>
+      enqueueWebhookEvent(db, { orgId, eventType: 'call.completed', eventKey: ev.providerCallId, payload: ev })
   )
   return new Response(res.body, { status: res.status })
 }

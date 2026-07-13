@@ -87,13 +87,13 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
             <AccordionTrigger>Functions</AccordionTrigger>
             <AccordionContent>
               <p className="mb-3 text-xs text-muted-foreground">
-                Connect a Cal.com calendar and this agent books confirmed appointments during the
-                call instead of taking a message.
+                With a Cal.com calendar connected in Integrations, this agent books confirmed
+                appointments during the call instead of taking a message.
               </p>
               <CalcomConnectForm
                 agentId={id}
-                connected={calcomConnected}
-                eventTypeId={orgRow?.calcom_event_type_id ?? null}
+                orgConnected={calcomConnected}
+                bookingEnabled={stored.seed?.liveBooking ?? false}
               />
             </AccordionContent>
           </AccordionItem>

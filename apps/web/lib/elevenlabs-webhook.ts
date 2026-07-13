@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@airtalk/db'
-import type { VoiceEngine } from '@airtalk/engine'
+import type { CallEvent, VoiceEngine } from '@airtalk/engine'
 import { upsertContact } from './contacts'
 import { externalNumber, recordOptOut } from './opt-out'
 import { deriveOutcome, type CallOutcome } from './outcome'
@@ -16,7 +16,10 @@ export async function handleElevenLabsWebhook(
   classify?: (transcript: unknown) => Promise<CallOutcome | null>,
   /** Phase 6: hand classification to Inngest (retries/backoff). Resolves false
    *  when the event wasn't accepted so the inline `classify` fallback runs. */
-  enqueueClassify?: (providerCallId: string) => Promise<boolean>
+  enqueueClassify?: (providerCallId: string) => Promise<boolean>,
+  /** Phase 17: fan the finished call out to the org's outbound webhook endpoints
+   *  (keyed by provider_call_id so reconcile can't double-send). */
+  emitCallCompleted?: (orgId: string, ev: CallEvent) => Promise<void>
 ): Promise<{ status: number; body: string }> {
   if (!engine.verifyWebhook({ rawBody, signature })) {
     return { status: 401, body: 'invalid signature' }
@@ -97,6 +100,13 @@ export async function handleElevenLabsWebhook(
         .update({ status: 'done', call_id: callRow?.id ?? null })
         .eq('provider_call_id', ev.providerCallId)
         .eq('status', 'calling')
+    }
+
+    // Phase 17: notify the org's outbound webhook endpoints of the completed
+    // call. Best-effort — never fails the webhook. The neutral CallEvent is the
+    // payload (rule 1: raw ElevenLabs payloads never leave us).
+    if (emitCallCompleted && agent?.org_id) {
+      await emitCallCompleted(agent.org_id, ev).catch((e) => console.error('emitCallCompleted failed:', e))
     }
 
     // Phase 4: minute counting. A usage failure must not fail the webhook —

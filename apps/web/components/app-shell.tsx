@@ -8,12 +8,14 @@ import type { Membership } from '../lib/org'
 import { AccountMenu } from './account-menu'
 import {
   AgentIcon,
+  AlertIcon,
   BillingIcon,
   BookIcon,
   CampaignIcon,
   ChartIcon,
   DashboardIcon,
   HashIcon,
+  IntegrationsIcon,
   MenuIcon,
   PhoneIcon,
   QaIcon,
@@ -43,6 +45,8 @@ const NAV: { href: string; label: string; Icon: (p: IconProps) => ReactNode }[] 
   { href: '/campaigns', label: 'Campaigns', Icon: CampaignIcon },
   { href: '/analytics', label: 'Analytics', Icon: ChartIcon },
   { href: '/qa', label: 'QA', Icon: QaIcon },
+  { href: '/alerts', label: 'Alerting', Icon: AlertIcon },
+  { href: '/integrations', label: 'Integrations', Icon: IntegrationsIcon },
   { href: '/billing', label: 'Billing', Icon: BillingIcon },
 ]
 

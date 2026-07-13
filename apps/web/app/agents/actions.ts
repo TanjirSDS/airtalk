@@ -1,7 +1,7 @@
 'use server'
 
 import { randomBytes } from 'node:crypto'
-import { getEnv, serviceClient, type SupabaseClient } from '@airtalk/db'
+import { getEnv, type SupabaseClient } from '@airtalk/db'
 import type { AgentConfig } from '@airtalk/engine'
 import {
   applySuggestionToPrompt,
@@ -18,7 +18,7 @@ import {
 } from '@airtalk/engine/templates'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { calcomBookingTool, listEventTypes } from '../../lib/calcom'
+import { calcomBookingTool } from '../../lib/calcom'
 import { appUrl } from '../../lib/email'
 import { makeEngine } from '../../lib/engine'
 import { generateAgentDraft } from '../../lib/generate-agent'
@@ -406,27 +406,20 @@ export async function dismissSuggestionAction(agentId: string, suggestionId: str
 // builder rail's Knowledge Base section calls that same action.
 
 /**
- * Phase 7: connect Cal.com and turn the booking agent's capture-only flow into
- * real booking — store the org's key, attach the check_availability_and_book
- * tool at the provider, and re-render the prompt with liveBooking on (rule 4:
- * the config change lands as a new version row). Reads the booking `seed`; Phase
- * 11's prompt-first rework will let this operate on the prompt directly.
+ * Phase 7 / Phase 17: enable or disable live Cal.com booking on ONE agent.
+ * The org's Cal.com credentials are entered on /integrations (connectCalcomAction
+ * there); this only attaches/detaches the check_availability_and_book tool at the
+ * provider and re-renders the prompt with liveBooking on/off (rule 4: lands as a
+ * new version row). Reads the booking `seed`.
  */
-export async function connectCalcomAction(agentId: string, formData: FormData) {
+export async function setAgentBookingAction(agentId: string, enabled: boolean) {
   const db = await userClient()
   try {
     const org = await requireOrg()
-    if (org.role !== 'owner') throw new Error('Only the org owner can connect a calendar')
     const email = await currentUserEmail(db)
     const env = getEnv()
     if (!env.APP_URL || !env.AGENT_TOOLS_SECRET) {
       throw new Error('APP_URL and AGENT_TOOLS_SECRET must be configured for agent tools')
-    }
-
-    const apiKey = (formData.get('apiKey') as string | null)?.trim()
-    const eventTypeId = Number(formData.get('eventTypeId'))
-    if (!apiKey || !Number.isInteger(eventTypeId) || eventTypeId <= 0) {
-      throw new Error('A Cal.com API key and event type id are required')
     }
 
     const agent = await getAgentRow(db, agentId)
@@ -435,27 +428,24 @@ export async function connectCalcomAction(agentId: string, formData: FormData) {
       throw new Error('Live booking only applies to booking-template agents')
     }
 
-    // Validate the key + id against Cal.com before storing anything.
-    const eventTypes = await listEventTypes(apiKey).catch(() => {
-      throw new Error('Cal.com rejected that API key')
-    })
-    if (!eventTypes.some((t) => t.id === eventTypeId)) {
-      const available = eventTypes.map((t) => `${t.id} (${t.title})`).join(', ') || 'none'
-      throw new Error(`Event type ${eventTypeId} not found for that key. Available: ${available}`)
+    if (enabled) {
+      // Org credentials must already be connected (on /integrations).
+      const { data: orgRow } = await db
+        .from('orgs')
+        .select('calcom_api_key, calcom_event_type_id')
+        .eq('id', org.orgId)
+        .maybeSingle()
+      if (!orgRow?.calcom_api_key || !orgRow?.calcom_event_type_id) {
+        throw new Error('Connect a Cal.com calendar in Integrations first')
+      }
     }
 
-    // orgs are member-read-only under RLS — billing-style owner-gated service write.
-    const { error } = await serviceClient()
-      .from('orgs')
-      .update({ calcom_api_key: apiKey, calcom_event_type_id: eventTypeId })
-      .eq('id', org.orgId)
-    if (error) throw new Error(error.message)
-
     const engine = makeEngine()
-    await engine.setAgentTools(agent.provider_agent_id, [
-      calcomBookingTool(agentId, appUrl(), env.AGENT_TOOLS_SECRET),
-    ])
-    const profile: BusinessProfile = { ...stored.seed, liveBooking: true }
+    await engine.setAgentTools(
+      agent.provider_agent_id,
+      enabled ? [calcomBookingTool(agentId, appUrl(), env.AGENT_TOOLS_SECRET)] : []
+    )
+    const profile: BusinessProfile = { ...stored.seed, liveBooking: enabled }
     const agentConfig = buildAgentConfig('booking', profile)
     await engine.updateAgent(agent.provider_agent_id, agentConfig)
     const newStored: StoredAgentConfig = { ...stored, seed: profile, agentConfig }
