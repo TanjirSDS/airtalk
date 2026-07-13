@@ -8,6 +8,9 @@ const PUBLIC_PREFIXES = ['/login', '/signup', '/auth', '/api/webhooks', '/api/cr
 // Org resolution happens per-request in lib/org.ts (RLS does the actual scoping).
 export async function middleware(req: NextRequest) {
   let res = NextResponse.next({ request: req })
+  // ponytail: DEV_BYPASS_AUTH=1 skips the login gate — local skeleton preview
+  // only (no signed-in user exists). Delete once local signup works.
+  if (process.env.DEV_BYPASS_AUTH === '1') return res
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,

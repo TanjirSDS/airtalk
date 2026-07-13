@@ -1,7 +1,9 @@
+import type { ReactNode } from 'react'
 import type { SupabaseClient } from '@airtalk/db'
 import { DashboardCharts, type DayPoint, type WeekPoint } from '../../components/dashboard-charts'
+import { ClockIcon, GaugeIcon, PhoneIcon, TimerIcon } from '../../components/icons'
 import { userClient } from '../../lib/supabase-server'
-import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card'
+import { Card } from '../../components/ui/card'
 import { formatDuration } from '../../lib/call-filters'
 import { OUTCOMES } from '../../lib/outcome'
 
@@ -53,15 +55,31 @@ export default async function DashboardPage() {
   const answered = period.filter((c) => (c.duration_secs ?? 0) > 0)
   const totalSecs = period.reduce((s, c) => s + (c.duration_secs ?? 0), 0)
 
-  const stats: [string, string, string][] = [
-    ['Calls today', String(calls.filter((c) => c.started_at?.startsWith(today)).length), ''],
-    ['Minutes this month', String(Math.round(totalSecs / 60)), `${period.length} calls`],
-    [
-      'Answer rate',
-      period.length ? `${Math.round((answered.length / period.length) * 100)}%` : '—',
-      'calls with any talk time',
-    ],
-    ['Avg duration', answered.length ? formatDuration(Math.round(totalSecs / answered.length)) : '—', ''],
+  const stats: { label: string; value: string; hint: string; icon: ReactNode }[] = [
+    {
+      label: 'Calls today',
+      value: String(calls.filter((c) => c.started_at?.startsWith(today)).length),
+      hint: 'inbound + outbound',
+      icon: <PhoneIcon className="h-4.5 w-4.5" />,
+    },
+    {
+      label: 'Minutes this month',
+      value: String(Math.round(totalSecs / 60)),
+      hint: `across ${period.length} calls`,
+      icon: <ClockIcon className="h-4.5 w-4.5" />,
+    },
+    {
+      label: 'Answer rate',
+      value: period.length ? `${Math.round((answered.length / period.length) * 100)}%` : '—',
+      hint: 'calls with talk time',
+      icon: <GaugeIcon className="h-4.5 w-4.5" />,
+    },
+    {
+      label: 'Avg duration',
+      value: answered.length ? formatDuration(Math.round(totalSecs / answered.length)) : '—',
+      hint: 'per answered call',
+      icon: <TimerIcon className="h-4.5 w-4.5" />,
+    },
   ]
 
   const perDay: DayPoint[] = Array.from({ length: DAYS }, (_, i) => {
@@ -89,19 +107,25 @@ export default async function DashboardPage() {
   })
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-semibold">Dashboard</h1>
+    <div className="space-y-8">
+      <header>
+        <h1 className="text-2xl font-semibold tracking-tight">Overview</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          How your voice agents performed over the last eight weeks.
+        </p>
+      </header>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {stats.map(([label, value, hint]) => (
-          <Card key={label}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-semibold">{value}</div>
-              {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
-            </CardContent>
+        {stats.map((s) => (
+          <Card key={s.label} className="p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-muted-foreground">{s.label}</span>
+              <span className="grid h-9 w-9 place-items-center rounded-lg bg-brand-soft text-brand">
+                {s.icon}
+              </span>
+            </div>
+            <div className="stat-num mt-3 text-[2rem] leading-none">{s.value}</div>
+            <p className="mt-2 text-xs text-muted-foreground">{s.hint}</p>
           </Card>
         ))}
       </div>
