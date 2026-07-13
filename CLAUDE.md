@@ -526,3 +526,84 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   migrate-agent-config twice, create via template/scratch/generate, duplicate +
   export + import round-trip, delete a scratch agent (provider GET → 404) and
   confirm it's blocked while a campaign is running/paused.
+
+### Phase 11 agent builder (2026-07-13)
+- Migration 0010: agent_config_versions.label (inline-editable),
+  agents.share_token text UNIQUE null. RLS from 0004 already covers both
+  (agents_org_rw / versions_org_rw) — no new policy. The public /share route
+  reads the agent by token via serviceClient (unauthenticated visitors have no
+  RLS scope) — capability access by a 32-hex random token, like /api/tools.
+- VERIFIED EL fields (2026-07-13, rule 6), all cited in code:
+  - first_message = conversation_config.agent.first_message. Non-empty ⇒ AI
+    speaks that line; EMPTY string ⇒ user speaks first (agent waits). A
+    model-GENERATED opening is NOT a first-class single-agent field — it only
+    exists as workflow node `entry_behavior` (generate_immediately|wait_for_
+    user|auto). So the Welcome control ships two live modes (static / user-first)
+    and shows "AI improvises opening" DISABLED ("coming with Conversational
+    Flow", Phase 18). Do not wire generated-first for single agents.
+  - LLM: prompt.llm, default gemini-2.5-flash. MODEL_INFO (templates subpath,
+    browser-safe) is a CURATED safe subset — the doc summarizer surfaced newer
+    ids (qwen*, gpt-oss-*, glm-*, top gpt-5.x) that looked irregular; confirm
+    against a live GET before adding. Source:
+    elevenlabs.io/docs/eleven-agents/customization/llm + .../api-reference/agents/create.
+  - language = agent.language. Additional languages = top-level language_presets,
+    a per-language override MAP (each entry needs `overrides`), NOT a plain list
+    → DEFERRED (single primary-language select only).
+  - Timezone/current-time: NO config field — system dynamic vars
+    system__time / system__time_utc / system__timezone. Implemented as a managed
+    "## Current time" prompt section ({{system__time_utc}} + the business tz),
+    set from the Handbook's timezone popover. Round-trips in the prompt (source
+    of truth), needs no schema/config field.
+  - Widget dynamic vars: attribute `dynamic-variables` = a JSON-object string.
+    testWidgetEmbed() now returns dynamicVariablesAttr; TestWidget stays
+    provider-blind (only knows "there's an attr for vars"). Test inputs persist
+    per-agent in localStorage (airtalk:test-inputs:{id}) and remount the widget
+    (React key on the vars) so a live call echoes them back.
+  - Public toggle: platform_settings.auth.enable_auth (false = public). New
+    engine.setAgentPublic(id, isPublic). Sits behind a $ref in the create schema
+    — confirm on a live GET. Share ON mints token + setAgentPublic(true); OFF
+    nulls the token so /share/agent/<token> 404s (provider stays public — the
+    in-app test widget relies on it). No expiry v1.
+  - Custom LLM: prompt.llm='custom-llm' + prompt.custom_llm {url, model_id?,
+    api_key:{secret_id}}. Secrets: POST /v1/convai/secrets {type:'new',name,
+    value} → {secret_id}. New engine.createSecret(). updateCustomLlmAction stores
+    the key as a workspace secret and persists ONLY the secret id — the key never
+    touches our DB (superseded secrets are left at the provider; prune if they
+    pile up). AgentConfig gained customLlm {url, modelId?, apiKeySecretId?};
+    toProviderConfig routes it. custom_llm is already enabled in the Phase 10
+    modal's "Other options"; the builder swaps the prompt editor for a URL/key
+    form (CustomLlmForm) and reduces the right rail.
+- Freeform-first LOCKED: /agents/[id] is now the builder (agent-builder.tsx,
+  keyed by current version so Save/rollback remount with fresh data). Header =
+  back, inline name, "Unsaved changes", Versions (Sheet), Share, primary Save.
+  Save = updateAgentAction (now also takes llm/language) = ONE updateAgent + ONE
+  version row (rule 4). Metadata strip: copyable Airtalk + provider ids,
+  effective $/min (includedRateCentsPerMin in billing-math, "included" vs 35¢
+  overage), LLM + language chips. Right column = accordion rail; Cal.com moved
+  into a "Functions" section and KB into "Knowledge Base" (same gates — nothing
+  regressed). agent-prompt-form.tsx deleted (superseded).
+- Managed prompt sections (templates/managed.ts, browser-safe, tested):
+  get/set/removeSection edit a "## Heading" block. Learning-merge reworked to
+  edit the PROMPT TEXT (applySuggestionToPrompt) via "## FAQs" (faq_addition
+  appends or REPLACES a matching Q/A — applying the same FAQ twice can't
+  duplicate) and "## Learned adjustments" (prompt_tweak/escalation_rule bullets,
+  deduped); missing anchors append at the end; kb_gap stays dismiss-only.
+  applySuggestionsAction now works for EVERY agent (no template/seed needed) —
+  the last seed-re-render path is gone (connectCalcomAction still uses the
+  booking template's buildAgentConfig; untouched). merge.test.ts rewritten
+  (prompt-text + the twice-replaces acceptance case). applySuggestionToProfile
+  removed.
+- Agent Handbook (handbook.ts): 3 tabs (Personality & Tone / Accuracy & Format /
+  Trust & Safety) of static toggle presets, each a bullet in a managed
+  "## Handbook" section (togglePreset/isPresetOn) + the timezone popover.
+- Versions Sheet: inline label edit (renameVersionAction), Restore
+  (rollbackAgentAction, append-only), and a dependency-free LCS line diff
+  (lib/line-diff.ts, tested) of a selected version vs current.
+- Acceptance verified OFFLINE (no Supabase/EL env as of Phase 11): typecheck +
+  lint (provider fence intact) + build clean; 131 tests pass (merge 6, managed 4,
+  line-diff 2, billing-math incl. included-rate). LIVE acceptance still needs the
+  stack: apply 0010; edit prompt→Save (one PATCH + one version) and rollback;
+  open a share link in incognito + toggle off → 404; set a test input and hear it
+  echoed on a live call; create/update a custom_llm agent and confirm the key
+  landed in EL secrets (GET /v1/convai/secrets), not our DB; confirm
+  platform_settings.auth.enable_auth path and the curated LLM ids on a live GET.

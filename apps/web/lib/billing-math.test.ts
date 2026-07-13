@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   annualPriceCents,
   graceDaysLeft,
+  includedRateCentsPerMin,
   overageDelta,
   OVERAGE_CENTS_PER_MIN,
   planChange,
@@ -10,6 +11,13 @@ import {
 const starter = { id: 'starter', price_cents: 49_900, included_minutes: 750 }
 const growth = { id: 'growth', price_cents: 99_900, included_minutes: 1500 }
 const pro = { id: 'pro', price_cents: 149_900, included_minutes: 2500 }
+
+describe('included rate cents/min', () => {
+  it('spreads plan price over included minutes; 0 when none', () => {
+    expect(includedRateCentsPerMin(starter.price_cents, starter.included_minutes)).toBeCloseTo(66.53, 2)
+    expect(includedRateCentsPerMin(1000, 0)).toBe(0)
+  })
+})
 
 describe('annual pricing (15% off, exact cents)', () => {
   it('matches the published plans', () => {

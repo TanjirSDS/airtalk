@@ -1,18 +1,18 @@
 import type { KnowledgeSource } from '@airtalk/engine'
 import { normalizeStoredConfigSafe } from '@airtalk/engine/templates'
-import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { AgentPromptForm } from '../../../components/agent-prompt-form'
+import { AgentBuilder, type BuilderConfig } from '../../../components/agent-builder'
 import { CalcomConnectForm } from '../../../components/calcom-connect-form'
-import { TestWidget } from '../../../components/test-widget'
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../../../components/ui/accordion'
 import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { Input } from '../../../components/ui/input'
+import { includedRateCentsPerMin, OVERAGE_CENTS_PER_MIN } from '../../../lib/billing-math'
 import { makeEngine } from '../../../lib/engine'
 import { activeOrg } from '../../../lib/org'
 import { userClient } from '../../../lib/supabase-server'
-import { addKnowledgeAction, removeKnowledgeAction, rollbackAgentAction } from '../actions'
+import { addKnowledgeAction, removeKnowledgeAction } from '../actions'
+import type { VersionRow } from '../../../components/versions-sheet'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,17 +22,43 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const { data: agent } = await db.from('agents').select('*').eq('id', id).maybeSingle()
   if (!agent) notFound()
 
-  // Plan gate (Phase 4): knowledge base is a growth+ feature.
-  const kbEnabled = (await activeOrg())?.plan.kbEnabled ?? false
+  const org = await activeOrg()
+  const kbEnabled = org?.plan.kbEnabled ?? false
 
   const { data: versions } = await db
     .from('agent_config_versions')
-    .select('version, created_at, config')
+    .select('version, created_at, config, label')
     .eq('agent_id', id)
     .order('version', { ascending: false })
 
   const engine = makeEngine()
   const voices = await engine.listVoices().catch(() => [])
+
+  const stored = normalizeStoredConfigSafe(agent.config)
+  if (!stored) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        This agent&apos;s configuration is unreadable. Run migrate-agent-config or recreate it.
+      </p>
+    )
+  }
+
+  // Effective $/min (item 1): plan price spread over included minutes, plus the
+  // flat overage rate. plans is authenticated-readable under RLS.
+  const { data: plan } = org
+    ? await db.from('plans').select('price_cents, included_minutes').eq('id', org.plan.id).maybeSingle()
+    : { data: null }
+  const rate = {
+    includedCentsPerMin: plan ? includedRateCentsPerMin(plan.price_cents, plan.included_minutes) : 0,
+    overageCentsPerMin: OVERAGE_CENTS_PER_MIN,
+    planName: org?.plan.name ?? '—',
+  }
+
+  // Cal.com booking (Phase 7) → the rail's Functions section.
+  const { data: orgRow } = await db.from('orgs').select('calcom_api_key, calcom_event_type_id').maybeSingle()
+  const calcomConnected = !!orgRow?.calcom_api_key && !!orgRow?.calcom_event_type_id
+
+  // Knowledge base → the rail's Knowledge Base section.
   let knowledge: KnowledgeSource[] = []
   let knowledgeError: string | null = null
   if (kbEnabled && agent.provider_agent_id) {
@@ -43,153 +69,99 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     }
   }
 
-  const stored = normalizeStoredConfigSafe(agent.config)
+  const showFunctions = stored.template === 'booking'
+  const isCustom = agent.agent_type === 'custom_llm'
+  // Right rail reduced for custom-LLM agents (item 8).
+  const rail =
+    !isCustom && (showFunctions || kbEnabled) ? (
+      <Accordion type="multiple" defaultValue={['functions', 'kb']} className="rounded-xl border bg-card px-4">
+        {showFunctions && (
+          <AccordionItem value="functions">
+            <AccordionTrigger>Functions</AccordionTrigger>
+            <AccordionContent>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Connect a Cal.com calendar and this agent books confirmed appointments during the
+                call instead of taking a message.
+              </p>
+              <CalcomConnectForm
+                agentId={id}
+                connected={calcomConnected}
+                eventTypeId={orgRow?.calcom_event_type_id ?? null}
+              />
+            </AccordionContent>
+          </AccordionItem>
+        )}
+        {kbEnabled && (
+          <AccordionItem value="kb">
+            <AccordionTrigger>Knowledge Base</AccordionTrigger>
+            <AccordionContent className="space-y-3">
+              {knowledgeError && <p className="text-sm text-destructive">{knowledgeError}</p>}
+              <ul className="space-y-2">
+                {knowledge.map((k) => (
+                  <li key={k.knowledgeId} className="flex items-center gap-2 rounded-md border p-2 text-sm">
+                    <Badge variant="outline">{k.type}</Badge>
+                    <span className="flex-1 truncate">{k.name}</span>
+                    <form action={removeKnowledgeAction.bind(null, id, k.knowledgeId)}>
+                      <Button type="submit" variant="ghost" size="sm">
+                        ✕
+                      </Button>
+                    </form>
+                  </li>
+                ))}
+                {knowledge.length === 0 && !knowledgeError && (
+                  <li className="text-sm text-muted-foreground">No sources attached yet.</li>
+                )}
+              </ul>
+              <form action={addKnowledgeAction.bind(null, id)} className="flex gap-2">
+                <Input name="url" type="url" placeholder="https://your-site.com/faq" required />
+                <Button type="submit" variant="outline">
+                  Add
+                </Button>
+              </form>
+              <form action={addKnowledgeAction.bind(null, id)} className="flex gap-2">
+                <Input name="file" type="file" required />
+                <Button type="submit" variant="outline">
+                  Upload
+                </Button>
+              </form>
+            </AccordionContent>
+          </AccordionItem>
+        )}
+      </Accordion>
+    ) : null
 
-  // Phase 7: booking agents can book real Cal.com slots once a calendar is connected.
-  const { data: orgRow } = await db
-    .from('orgs')
-    .select('calcom_api_key, calcom_event_type_id')
-    .maybeSingle()
-  const calcomConnected = !!orgRow?.calcom_api_key && !!orgRow?.calcom_event_type_id
+  const config: BuilderConfig = {
+    name: stored.agentConfig.name,
+    systemPrompt: stored.agentConfig.systemPrompt,
+    firstMessage: stored.agentConfig.firstMessage,
+    voiceId: stored.agentConfig.voiceId,
+    llm: stored.agentConfig.llm,
+    language: stored.agentConfig.language,
+    customLlm: stored.agentConfig.customLlm,
+  }
+
+  const versionRows: VersionRow[] = (versions ?? []).map((v) => ({
+    version: v.version,
+    createdAt: v.created_at,
+    label: (v as { label: string | null }).label ?? null,
+    prompt: normalizeStoredConfigSafe(v.config)?.agentConfig.systemPrompt ?? '',
+  }))
+  const currentVersion = versionRows[0]?.version ?? 1
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">{agent.name}</h1>
-        <div className="flex items-center gap-2">
-          <Link className="text-sm underline" href={`/agents/${id}/learning`}>
-            Learning
-          </Link>
-          {stored?.template && <Badge variant="secondary">{stored.template}</Badge>}
-          <Badge>{agent.status}</Badge>
-        </div>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Test your agent</CardTitle>
-          <CardDescription>Talk to it right here in the browser.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {agent.provider_agent_id ? (
-            <TestWidget embed={engine.testWidgetEmbed(agent.provider_agent_id)} />
-          ) : (
-            <p className="text-sm text-muted-foreground">Agent has no provider id yet.</p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Prompt</CardTitle>
-          <CardDescription>
-            The prompt is the source of truth — saving pushes exactly this text to the provider and
-            records a new version.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {stored ? (
-            <AgentPromptForm agentId={id} config={stored.agentConfig} voices={voices} />
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              This agent&apos;s configuration is unreadable. Run migrate-agent-config or recreate it.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      {stored?.template === 'booking' && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Calendar booking (Cal.com)</CardTitle>
-            <CardDescription>
-              Connect a Cal.com calendar and this agent checks real availability and books
-              confirmed appointments during the call, instead of taking a message.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <CalcomConnectForm
-              agentId={id}
-              connected={calcomConnected}
-              eventTypeId={orgRow?.calcom_event_type_id ?? null}
-            />
-          </CardContent>
-        </Card>
-      )}
-
-      {kbEnabled && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Knowledge base</CardTitle>
-            <CardDescription>
-              Documents and pages the agent can answer questions from.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {knowledgeError && <p className="text-sm text-destructive">{knowledgeError}</p>}
-            <ul className="space-y-2">
-              {knowledge.map((k) => (
-                <li key={k.knowledgeId} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-                  <Badge variant="outline">{k.type}</Badge>
-                  <span className="flex-1 truncate">{k.name}</span>
-                  <form action={removeKnowledgeAction.bind(null, id, k.knowledgeId)}>
-                    <Button type="submit" variant="ghost" size="sm">
-                      ✕
-                    </Button>
-                  </form>
-                </li>
-              ))}
-              {knowledge.length === 0 && !knowledgeError && (
-                <li className="text-sm text-muted-foreground">No sources attached yet.</li>
-              )}
-            </ul>
-            <form action={addKnowledgeAction.bind(null, id)} className="flex gap-2">
-              <Input name="url" type="url" placeholder="https://your-site.com/faq" required />
-              <Button type="submit" variant="outline">
-                Add URL
-              </Button>
-            </form>
-            <form action={addKnowledgeAction.bind(null, id)} className="flex gap-2">
-              <Input name="file" type="file" required />
-              <Button type="submit" variant="outline">
-                Upload file
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Version history</CardTitle>
-          <CardDescription>
-            Rolling back re-applies that version to the provider and records it as a new version.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ul className="space-y-2">
-            {(versions ?? []).map((v, i) => (
-              <li key={v.version} className="flex items-center gap-3 rounded-md border p-2 text-sm">
-                <Badge variant={i === 0 ? 'default' : 'outline'}>v{v.version}</Badge>
-                <span className="flex-1 text-muted-foreground">
-                  {new Date(v.created_at).toLocaleString()}
-                  {i === 0 && ' — current'}
-                </span>
-                {i > 0 && (
-                  <form action={rollbackAgentAction.bind(null, id, v.version)}>
-                    <Button type="submit" variant="outline" size="sm">
-                      Roll back to v{v.version}
-                    </Button>
-                  </form>
-                )}
-              </li>
-            ))}
-            {(versions ?? []).length === 0 && (
-              <li className="text-sm text-muted-foreground">No versions recorded yet.</li>
-            )}
-          </ul>
-        </CardContent>
-      </Card>
-    </div>
+    <AgentBuilder
+      key={currentVersion}
+      agentId={id}
+      providerAgentId={agent.provider_agent_id}
+      status={agent.status}
+      agentType={agent.agent_type ?? 'single'}
+      config={config}
+      voices={voices}
+      embed={agent.provider_agent_id ? engine.testWidgetEmbed(agent.provider_agent_id) : null}
+      shareToken={agent.share_token ?? null}
+      versions={versionRows}
+      rate={rate}
+      rail={rail}
+    />
   )
 }

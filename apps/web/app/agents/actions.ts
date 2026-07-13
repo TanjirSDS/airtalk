@@ -1,13 +1,13 @@
 'use server'
 
+import { randomBytes } from 'node:crypto'
 import { getEnv, serviceClient, type SupabaseClient } from '@airtalk/db'
 import type { AgentConfig } from '@airtalk/engine'
 import {
-  applySuggestionToProfile,
+  applySuggestionToPrompt,
   buildAgentConfig,
   ensureDisclosureAndConduct,
   normalizeStoredConfig,
-  templates,
   type AgentType,
   type BusinessProfile,
   type StoredAgentConfig,
@@ -143,10 +143,18 @@ export async function createAgentAction(input: {
   redirect(dest)
 }
 
-/** Freeform-first edit (Phase 10): the prompt text is the source of truth. */
+/** Freeform-first edit (Phase 10/11): the prompt text is the source of truth.
+ *  firstMessage '' ⇒ user speaks first. llm/language are concrete (picker-driven). */
 export async function updateAgentAction(
   agentId: string,
-  input: { name: string; systemPrompt: string; firstMessage: string; voiceId: string }
+  input: {
+    name: string
+    systemPrompt: string
+    firstMessage: string
+    voiceId: string
+    llm?: string
+    language?: string
+  }
 ) {
   const db = await userClient()
   try {
@@ -159,6 +167,8 @@ export async function updateAgentAction(
       systemPrompt: input.systemPrompt,
       firstMessage: input.firstMessage,
       voiceId: input.voiceId,
+      ...(input.llm ? { llm: input.llm } : {}),
+      ...(input.language ? { language: input.language } : {}),
     }
     if (!validConfig(agentConfig)) throw new Error('Name, prompt and voice are required')
     await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
@@ -292,13 +302,12 @@ export async function generateDraftAction(description: string) {
 }
 
 /**
- * Phase 8: apply reviewed suggestions (one or a batch). All selected rows merge
- * into the seed profile, the adapter gets ONE update, and ONE new version row is
- * appended — so a batch-apply is a single rollback target. Rows that can't
- * merge (kb_gaps, duplicates) are skipped, not failed.
- * Phase 11 will rework this to edit the prompt text directly; until then it is
- * the one path that still re-renders from `seed` (only template-seeded agents
- * with a seed can apply — freeform/scratch agents fall through gracefully).
+ * Phase 8/11: apply reviewed suggestions (one or a batch). Each selected row is
+ * folded into the freeform prompt TEXT via managed sections (## FAQs, ## Learned
+ * adjustments — see merge.ts), the adapter gets ONE update, and ONE new version
+ * row is appended, so a batch-apply is a single rollback target. Rows that can't
+ * merge (kb_gaps, duplicates) are skipped, not failed. Now works for every agent
+ * (freeform-first) — no template/seed required.
  */
 export async function applySuggestionsAction(agentId: string, formData: FormData) {
   const db = await userClient()
@@ -312,9 +321,6 @@ export async function applySuggestionsAction(agentId: string, formData: FormData
 
   const agent = await getAgentRow(db, agentId)
   const stored = normalizeStoredConfig(agent.config)
-  if (!stored.seed || !stored.template || !(stored.template in templates)) {
-    throw new Error('This agent has no editable template profile to merge into')
-  }
 
   const { data: rows, error } = await db
     .from('agent_suggestions')
@@ -324,14 +330,14 @@ export async function applySuggestionsAction(agentId: string, formData: FormData
     .in('id', ids)
   if (error) throw new Error(error.message)
 
-  let profile = stored.seed
+  let prompt = stored.agentConfig.systemPrompt
   const applied: string[] = []
   for (const row of rows ?? []) {
     const payload: SuggestionPayload = { ...(row.suggestion as SuggestionPayload) }
     if (answerOverride) payload.a = answerOverride
-    const merged = applySuggestionToProfile(profile, row.type as SuggestionType, payload)
+    const merged = applySuggestionToPrompt(prompt, row.type as SuggestionType, payload)
     if (merged) {
-      profile = merged
+      prompt = merged
       applied.push(row.id)
     }
   }
@@ -339,9 +345,9 @@ export async function applySuggestionsAction(agentId: string, formData: FormData
     throw new Error('Nothing could be applied — knowledge gaps need information only you can add')
   }
 
-  const agentConfig = buildAgentConfig(stored.template, profile)
+  const agentConfig: AgentConfig = { ...stored.agentConfig, systemPrompt: prompt }
   await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
-  const newStored: StoredAgentConfig = { ...stored, seed: profile, agentConfig }
+  const newStored: StoredAgentConfig = { ...stored, agentConfig }
   const { error: updErr } = await db
     .from('agents')
     .update({
@@ -461,4 +467,92 @@ export async function connectCalcomAction(agentId: string, formData: FormData) {
     return { error: e instanceof Error ? e.message : String(e) }
   }
   revalidatePath(`/agents/${agentId}`)
+}
+
+/**
+ * Custom LLM (agent_type 'custom_llm'): point the agent at a BYO OpenAI-compatible
+ * endpoint. The API key is stored as an ElevenLabs workspace secret — only the
+ * returned secret id ever touches our DB (acceptance: key lands in EL secrets).
+ * A blank apiKey keeps the existing secret; changing the key mints a new one.
+ * ponytail: superseded secrets are left in the workspace — prune them at the
+ * provider if they ever pile up.
+ */
+export async function updateCustomLlmAction(
+  agentId: string,
+  input: { url: string; modelId?: string; apiKey?: string }
+) {
+  const db = await userClient()
+  try {
+    const email = await currentUserEmail(db)
+    const agent = await getAgentRow(db, agentId)
+    const stored = normalizeStoredConfig(agent.config)
+    const url = input.url.trim()
+    if (!/^https:\/\//i.test(url)) throw new Error('Enter a valid https:// endpoint URL')
+
+    const engine = makeEngine()
+    let apiKeySecretId = stored.agentConfig.customLlm?.apiKeySecretId
+    const apiKey = input.apiKey?.trim()
+    if (apiKey) {
+      const { secretId } = await engine.createSecret(`custom-llm-${agentId.slice(0, 8)}-${Date.now()}`, apiKey)
+      apiKeySecretId = secretId
+    }
+
+    const agentConfig: AgentConfig = {
+      ...stored.agentConfig,
+      customLlm: {
+        url,
+        ...(input.modelId?.trim() ? { modelId: input.modelId.trim() } : {}),
+        ...(apiKeySecretId ? { apiKeySecretId } : {}),
+      },
+    }
+    await engine.updateAgent(agent.provider_agent_id, agentConfig)
+    const newStored: StoredAgentConfig = { ...stored, agentConfig }
+    const { error } = await db
+      .from('agents')
+      .update({ config: newStored, updated_by: email, updated_at: new Date().toISOString() })
+      .eq('id', agentId)
+    if (error) throw new Error(error.message)
+    const version = await insertVersion(db, agentId, newStored)
+    revalidatePath(`/agents/${agentId}`)
+    return { version }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * Share toggle (Phase 11). ON: mint (or reuse) a share_token and make the provider
+ * agent public so the signed-out widget works. OFF: null the token so
+ * /share/agent/<token> 404s (the provider stays public — the in-app test widget
+ * relies on it). Returns the token for the copy-link UI.
+ */
+export async function setShareAction(agentId: string, enabled: boolean) {
+  const db = await userClient()
+  try {
+    const agent = await getAgentRow(db, agentId)
+    let token: string | null = null
+    if (enabled) {
+      token = agent.share_token ?? randomBytes(16).toString('hex')
+      if (agent.provider_agent_id) await makeEngine().setAgentPublic(agent.provider_agent_id, true)
+    }
+    const { error } = await db.from('agents').update({ share_token: token }).eq('id', agentId)
+    if (error) throw new Error(error.message)
+    revalidatePath(`/agents/${agentId}`)
+    return { token }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** Inline-editable version label (Phase 11). Empty clears it. */
+export async function renameVersionAction(agentId: string, version: number, label: string) {
+  const db = await userClient()
+  const { error } = await db
+    .from('agent_config_versions')
+    .update({ label: label.trim() || null })
+    .eq('agent_id', agentId)
+    .eq('version', version)
+  if (error) return { error: error.message }
+  revalidatePath(`/agents/${agentId}`)
+  return {}
 }

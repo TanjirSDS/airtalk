@@ -2,13 +2,23 @@
 
 // Renders the provider's browser test-call widget from a generic descriptor
 // (script + custom element) so this component knows nothing about ElevenLabs.
+// dynamicVars are injected via the descriptor-named attribute as a JSON string.
 import { createElement, useEffect, useState } from 'react'
 import { Button } from './ui/button'
 
+export interface WidgetEmbed {
+  scriptSrc: string
+  tagName: string
+  attrs: Record<string, string>
+  dynamicVariablesAttr: string
+}
+
 export function TestWidget({
   embed,
+  dynamicVars,
 }: {
-  embed: { scriptSrc: string; tagName: string; attrs: Record<string, string> }
+  embed: WidgetEmbed
+  dynamicVars?: Record<string, string>
 }) {
   const [open, setOpen] = useState(false)
 
@@ -31,5 +41,12 @@ export function TestWidget({
       </div>
     )
   }
-  return createElement(embed.tagName, embed.attrs)
+  const vars = dynamicVars && Object.keys(dynamicVars).length ? dynamicVars : null
+  const attrs = {
+    ...embed.attrs,
+    ...(vars ? { [embed.dynamicVariablesAttr]: JSON.stringify(vars) } : {}),
+    // key on the vars so changing test inputs remounts the widget with them
+    key: vars ? JSON.stringify(vars) : 'no-vars',
+  }
+  return createElement(embed.tagName, attrs)
 }

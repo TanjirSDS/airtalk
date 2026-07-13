@@ -44,15 +44,30 @@ export class ElevenLabsEngine implements VoiceEngine {
 
   /** Maps our AgentConfig onto ElevenLabs' nested conversation_config. */
   private toProviderConfig(cfg: Partial<AgentConfig>) {
+    // Custom LLM (verified 2026-07-13): prompt.llm='custom-llm' + prompt.custom_llm
+    // {url, model_id?, api_key:{secret_id}} — the key is a workspace-secret ref,
+    // never a plain string. https://elevenlabs.io/docs/eleven-agents/customization/llm/custom-llm
+    const custom = cfg.customLlm
     return {
       ...(cfg.name !== undefined && { name: cfg.name }),
       conversation_config: {
         agent: {
+          // empty string ⇒ user speaks first (agent waits); verified against
+          // https://elevenlabs.io/docs/api-reference/agents/create
           ...(cfg.firstMessage !== undefined && { first_message: cfg.firstMessage }),
           language: cfg.language ?? 'en',
           prompt: {
             ...(cfg.systemPrompt !== undefined && { prompt: cfg.systemPrompt }),
-            ...(cfg.llm !== undefined && { llm: cfg.llm }),
+            ...(custom
+              ? {
+                  llm: 'custom-llm',
+                  custom_llm: {
+                    url: custom.url,
+                    ...(custom.modelId && { model_id: custom.modelId }),
+                    ...(custom.apiKeySecretId && { api_key: { secret_id: custom.apiKeySecretId } }),
+                  },
+                }
+              : cfg.llm !== undefined && { llm: cfg.llm }),
           },
         },
         ...(cfg.voiceId !== undefined && { tts: { voice_id: cfg.voiceId } }),
@@ -266,13 +281,33 @@ export class ElevenLabsEngine implements VoiceEngine {
   }
 
   /** Embed per https://elevenlabs.io/docs/eleven-agents/customization/widget —
-   *  NOTE: the widget needs the agent public with authentication disabled. */
+   *  NOTE: the widget needs the agent public with authentication disabled.
+   *  dynamic-variables: a JSON-object string, e.g. '{"user_name":"John"}'
+   *  (verified 2026-07-13 against the widget + dynamic-variables docs). */
   testWidgetEmbed(providerAgentId: string) {
     return {
       scriptSrc: 'https://unpkg.com/@elevenlabs/convai-widget-embed',
       tagName: 'elevenlabs-convai',
       attrs: { 'agent-id': providerAgentId },
+      dynamicVariablesAttr: 'dynamic-variables',
     }
+  }
+
+  /** platform_settings.auth.enable_auth=false ⇒ public (widget works signed-out).
+   *  Verified 2026-07-13; the field sits behind a $ref in the create schema —
+   *  confirm on a live GET. https://elevenlabs.io/docs/eleven-agents/customization/authentication */
+  async setAgentPublic(providerAgentId: string, isPublic: boolean) {
+    await this.req('PATCH', `/v1/convai/agents/${providerAgentId}`, {
+      platform_settings: { auth: { enable_auth: !isPublic } },
+    })
+  }
+
+  /** POST /v1/convai/secrets {type:'new',name,value} → {secret_id} (verified
+   *  2026-07-13). Referenced elsewhere as {secret_id}, so a custom-LLM key lands
+   *  at the provider, never in our DB. https://elevenlabs.io/docs/api-reference/workspace/secrets/create */
+  async createSecret(name: string, value: string) {
+    const res = await this.req('POST', '/v1/convai/secrets', { type: 'new', name, value })
+    return { secretId: res.secret_id as string }
   }
 
   /** GET /v1/convai/conversations/{id}/audio — verified against docs 2026-07-12. */

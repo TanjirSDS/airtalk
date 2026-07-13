@@ -2,7 +2,7 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 // Signature-verified or secret-guarded machine routes, plus the login/signup flows.
-const PUBLIC_PREFIXES = ['/login', '/signup', '/auth', '/api/webhooks', '/api/cron', '/api/health', '/api/inngest', '/api/tools']
+const PUBLIC_PREFIXES = ['/login', '/signup', '/auth', '/share', '/api/webhooks', '/api/cron', '/api/health', '/api/inngest', '/api/tools']
 
 // Refreshes the Supabase session cookie and gates everything else behind login.
 // Org resolution happens per-request in lib/org.ts (RLS does the actual scoping).

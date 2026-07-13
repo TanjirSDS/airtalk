@@ -19,12 +19,25 @@ export {
   type StoredAgentConfig,
 } from './stored'
 export {
-  applySuggestionToProfile,
+  applySuggestionToPrompt,
+  FAQ_HEADING,
+  LEARNED_HEADING,
   SUGGESTION_TYPES,
   suggestionTitle,
   type SuggestionPayload,
   type SuggestionType,
 } from './merge'
+export { getSection, hasSection, removeSection, setSection } from './managed'
+export { DEFAULT_LLM, MODEL_INFO, modelLabel, type ModelInfo } from './model-info'
+export {
+  HANDBOOK_HEADING,
+  HANDBOOK_PRESETS,
+  HANDBOOK_TABS,
+  isPresetOn,
+  togglePreset,
+  type HandbookPreset,
+  type HandbookTab,
+} from './handbook'
 
 export const templates = {
   receptionist,

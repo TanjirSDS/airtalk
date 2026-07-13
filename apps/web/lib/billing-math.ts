@@ -9,6 +9,12 @@ export function annualPriceCents(monthlyCents: number): number {
   return Math.round(monthlyCents * 12 * (1 - ANNUAL_DISCOUNT))
 }
 
+/** Effective cost of an included minute (plan price spread over its minutes), in
+ *  cents. Shown on the builder next to the flat overage rate. 0 if no minutes. */
+export function includedRateCentsPerMin(priceCents: number, includedMinutes: number): number {
+  return includedMinutes > 0 ? priceCents / includedMinutes : 0
+}
+
 /** Whole overage minutes not yet reported to Stripe. Meter events are additive,
  *  so the daily job sends this delta and bumps overage_reported by the same
  *  amount. Partial minutes wait until they complete a whole one. */

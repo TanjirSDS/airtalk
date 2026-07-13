@@ -1,69 +1,70 @@
 import { describe, expect, it } from 'vitest'
-import { applySuggestionToProfile } from './merge'
-import { receptionist } from './receptionist'
-import type { BusinessProfile } from './shared'
+import { applySuggestionToPrompt, FAQ_HEADING, LEARNED_HEADING } from './merge'
+import { getSection } from './managed'
 
-const profile: BusinessProfile = {
-  businessName: "Joe's Plumbing",
-  industry: 'plumbing',
-  hours: 'Mon–Fri 8–6',
-  services: ['drain cleaning'],
-  faqs: [{ q: 'Do you service Riverside?', a: 'No.' }],
-  greetingStyle: 'friendly',
-  voiceId: 'v1',
-}
+const BASE = `You are the AI phone assistant for Joe's Plumbing.
 
-describe('applySuggestionToProfile', () => {
-  it('appends a new FAQ', () => {
-    const out = applySuggestionToProfile(profile, 'faq_addition', {
+## Your job on every call
+Answer questions and take messages.`
+
+describe('applySuggestionToPrompt', () => {
+  it('appends a new FAQ, creating the ## FAQs section', () => {
+    const out = applySuggestionToPrompt(BASE, 'faq_addition', {
       q: 'Do you do gutter cleaning?',
       a: 'Yes, from $99.',
-    })
-    expect(out?.faqs).toHaveLength(2)
-    expect(out?.faqs[1]).toEqual({ q: 'Do you do gutter cleaning?', a: 'Yes, from $99.' })
-    expect(profile.faqs).toHaveLength(1) // pure — input untouched
+    })!
+    expect(out).toContain(FAQ_HEADING)
+    expect(getSection(out, FAQ_HEADING)).toContain('Q: Do you do gutter cleaning?\nA: Yes, from $99.')
+    expect(BASE).not.toContain('## FAQs') // pure — input untouched
   })
 
   it('replaces the answer when the question already exists (wrong-FAQ fix)', () => {
-    const out = applySuggestionToProfile(profile, 'faq_addition', {
-      q: 'do you service riverside?',
-      a: 'Yes, we do.',
-    })
-    expect(out?.faqs).toHaveLength(1)
-    expect(out?.faqs[0].a).toBe('Yes, we do.')
+    const withFaq = applySuggestionToPrompt(BASE, 'faq_addition', {
+      q: 'Do you service Riverside?',
+      a: 'No.',
+    })!
+    const fixed = applySuggestionToPrompt(withFaq, 'faq_addition', {
+      q: 'do you service riverside?', // case-insensitive match
+      a: 'Yes, we do now.',
+    })!
+    const faqs = getSection(fixed, FAQ_HEADING)!
+    expect(faqs).toContain('A: Yes, we do now.')
+    expect(faqs).not.toContain('A: No.')
   })
 
-  it('is a no-op for exact duplicates and malformed payloads', () => {
-    expect(
-      applySuggestionToProfile(profile, 'faq_addition', { q: 'Do you service Riverside?', a: 'No.' })
-    ).toBeNull()
-    expect(applySuggestionToProfile(profile, 'faq_addition', { q: 'Only a question' })).toBeNull()
-    expect(applySuggestionToProfile(profile, 'prompt_tweak', {})).toBeNull()
+  it('applying the same FAQ twice replaces rather than duplicates (acceptance)', () => {
+    const once = applySuggestionToPrompt(BASE, 'faq_addition', { q: 'Are you open Sunday?', a: 'No.' })!
+    // exact duplicate → no-op
+    expect(applySuggestionToPrompt(once, 'faq_addition', { q: 'Are you open Sunday?', a: 'No.' })).toBeNull()
+    // same question, new answer → replaces, still exactly one entry
+    const twice = applySuggestionToPrompt(once, 'faq_addition', { q: 'Are you open Sunday?', a: 'Yes, 10-2.' })!
+    expect(twice.match(/Q: Are you open Sunday\?/g)).toHaveLength(1)
+    expect(getSection(twice, FAQ_HEADING)).toContain('A: Yes, 10-2.')
   })
 
-  it('appends prompt tweaks and escalation rules to extraInstructions, deduped', () => {
-    const one = applySuggestionToProfile(profile, 'prompt_tweak', {
+  it('is a no-op for malformed payloads', () => {
+    expect(applySuggestionToPrompt(BASE, 'faq_addition', { q: 'Only a question' })).toBeNull()
+    expect(applySuggestionToPrompt(BASE, 'prompt_tweak', {})).toBeNull()
+  })
+
+  it('appends prompt tweaks and escalation rules to ## Learned adjustments, deduped', () => {
+    const one = applySuggestionToPrompt(BASE, 'prompt_tweak', {
       instruction: 'Always mention the weekend emergency line.',
     })!
-    expect(one.extraInstructions).toEqual(['Always mention the weekend emergency line.'])
-    const dup = applySuggestionToProfile(one, 'escalation_rule', {
-      instruction: 'Always mention the weekend emergency line.',
-    })
-    expect(dup).toBeNull()
+    expect(getSection(one, LEARNED_HEADING)).toBe('- Always mention the weekend emergency line.')
+    // same instruction via a different type → still a duplicate → no-op
+    expect(
+      applySuggestionToPrompt(one, 'escalation_rule', {
+        instruction: 'always mention the weekend emergency line.',
+      })
+    ).toBeNull()
+    const two = applySuggestionToPrompt(one, 'escalation_rule', {
+      instruction: 'If the caller mentions flooding, escalate immediately.',
+    })!
+    expect(getSection(two, LEARNED_HEADING)!.split('\n')).toHaveLength(2)
   })
 
   it('never auto-applies kb_gap', () => {
-    expect(applySuggestionToProfile(profile, 'kb_gap', { topic: 'gutter cleaning pricing' })).toBeNull()
-  })
-
-  it('applied instructions render in the generated prompt', () => {
-    const out = applySuggestionToProfile(profile, 'escalation_rule', {
-      instruction: 'If the caller mentions flooding, escalate immediately.',
-    })!
-    const prompt = receptionist(out).systemPrompt
-    expect(prompt).toContain('## Learned adjustments')
-    expect(prompt).toContain('If the caller mentions flooding, escalate immediately.')
-    // and the base profile renders without the section
-    expect(receptionist(profile).systemPrompt).not.toContain('Learned adjustments')
+    expect(applySuggestionToPrompt(BASE, 'kb_gap', { topic: 'gutter cleaning pricing' })).toBeNull()
   })
 })
