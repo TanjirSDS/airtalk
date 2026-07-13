@@ -1,49 +1,8 @@
-import { AgentWizard } from '../../../components/agent-wizard'
-import { makeEngine } from '../../../lib/engine'
-import { activeOrg } from '../../../lib/org'
-import { userClient } from '../../../lib/supabase-server'
+import { redirect } from 'next/navigation'
 
-export const dynamic = 'force-dynamic' // hits the provider voices API per request
-
-export default async function NewAgentPage() {
-  // Plan gate (Phase 4): max_agents. createAgentAction re-checks — this is just UX.
-  const org = await activeOrg()
-  if (org) {
-    const { count } = await (await userClient())
-      .from('agents')
-      .select('id', { count: 'exact', head: true })
-      .eq('org_id', org.orgId)
-    if ((count ?? 0) >= org.plan.maxAgents) {
-      return (
-        <div className="space-y-4">
-          <h1 className="text-2xl font-semibold">New agent</h1>
-          <p className="text-muted-foreground">
-            Your {org.plan.name} plan includes {org.plan.maxAgents} agent
-            {org.plan.maxAgents === 1 ? '' : 's'} and you&apos;ve reached that limit. Upgrade your
-            plan to add more.
-          </p>
-        </div>
-      )
-    }
-  }
-
-  // Provider down ≠ dashboard down (Phase 6 graceful degradation).
-  const voices = await makeEngine()
-    .listVoices()
-    .catch((e) => {
-      console.error('listVoices failed:', e)
-      return null
-    })
-  return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-semibold">New agent</h1>
-      {voices ? (
-        <AgentWizard voices={voices} />
-      ) : (
-        <p className="text-muted-foreground">
-          The voice service is temporarily unreachable — try again in a few minutes.
-        </p>
-      )}
-    </div>
-  )
+// Phase 10: creating an agent moved into the "Create an Agent" modal on /agents.
+// This route stays as a redirect so old links (and the signup flow's own agent
+// step, which still renders the wizard) keep working.
+export default function NewAgentPage() {
+  redirect('/agents')
 }

@@ -458,3 +458,71 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   reloads, dark legibility of every page, mobile slide-over, switcher swapping
   data with a 2-org user) still need the stack stood up — no Supabase/env as of
   Phase 9. Run seed-orgs (now cross-membered) once it is.
+
+### Phase 10 agents surface + freeform-first (2026-07-13)
+- Migration 0009: agents.agent_type ('single'|'flow'|'custom_llm', default
+  'single'), agents.updated_at (default now()), agents.updated_by (user email).
+  Every agent-mutating server action sets updated_at/updated_by. 0009 ALSO
+  relaxes delete-blocking FKs so the new delete works: calls.agent_id +
+  phone_numbers.agent_id → ON DELETE SET NULL (keep call history, free numbers),
+  campaigns.agent_id → ON DELETE CASCADE. The delete ACTION still blocks while a
+  campaign is running/paused (rule 3) and detaches numbers at the provider first.
+- StoredAgentConfig v2 = { agentType, template: TemplateKey|null, seed?:
+  BusinessProfile, agentConfig }. agentConfig.systemPrompt is AUTHORITATIVE —
+  templates only SEED it once; the prompt text is thereafter the source of truth.
+  Moved to '@airtalk/engine/templates' (stored.ts, browser-safe) so the migrate
+  script + web share it; apps/web/lib/types.ts re-exports. normalizeStoredConfig
+  (throws) + normalizeStoredConfigSafe (null) reshape v1 {template,profile,
+  agentConfig}→profile becomes seed, and bootstrap-era plain AgentConfig→wrapped,
+  with FIXED key order so re-normalize is byte-identical.
+- scripts/migrate-agent-config.ts (npm run migrate-agent-config): normalizes
+  agents.config AND agent_config_versions.config (both keyed on their own `id`;
+  versions.agent_id is NOT unique). Idempotent via a key-order-STABLE compare —
+  Postgres jsonb canonicalizes key order, so a plain stringify compare would
+  rewrite every v2 row each run; stable() sorts keys at every level → true no-op
+  on re-runs. agentConfig is never touched. Nothing re-renders from profile now.
+- Edit is freeform (agent-prompt-form.tsx replaces the profile form + AgentEdit-
+  Form, deleted): edit name/firstMessage/systemPrompt/voice directly; Save pushes
+  exactly that to the provider + appends a version (rule 4). updateAgentAction
+  signature changed to {name, systemPrompt, firstMessage, voiceId}.
+- The ONE path still re-rendering from seed: learning-apply (applySuggestions-
+  Action) + Cal.com connect (connectCalcomAction), both now read stored.seed and
+  guard on it (template-seeded agents only; freeform/scratch fall through). Phase
+  11 reworks learning-merge to edit prompt text directly — merge.ts untouched
+  here. jobs.ts learning cron reads stored.seed via normalizeStoredConfigSafe.
+- Template registry grew 3→8 (catalog.ts holds the 5 new builders; every builder
+  reuses greeting()/businessFacts()/conductRules()/TONE so the disclosure greeting
+  + opt-out rule 7 are guaranteed — templates.test now 33 tests): receptionist,
+  after_hours (Receptionist); booking (Appointment Booking); lead_qualifier (Lead
+  Qualification); outbound_sales, win_back (Outbound Sales, custom outbound
+  greeting so it isn't "thanks for calling"); support, order_status (Customer
+  Support). TEMPLATE_INFO gained {category}; TEMPLATE_CATEGORIES exported. Build-
+  from-scratch = scratchAgentConfig(seed, voiceId) (bare role + facts + conduct,
+  template null). Generate = lib/generate-agent.ts (gpt-4o-mini, injectable fetch
+  like outcome.ts, OPENAI_API_KEY optional → card hidden); generateDraftAction
+  ALWAYS appends disclosure + conduct server-side via ensureDisclosureAndConduct
+  before returning the draft.
+- Create surface: one createAgentAction({agentType, template, seed?, agentConfig,
+  redirectTo?}) funnels the modal, import, duplicate, and the signup wizard
+  through a private createStoredAgent (plan gate → provider create → row →
+  version 1). The modal (create-agent-modal.tsx) builds agentConfig CLIENT-side
+  (buildAgentConfig/scratchAgentConfig are browser-safe): Step A type cards
+  (Single Prompt; Conversational Flow disabled "coming soon" until Phase 18;
+  Other options→Custom LLM, which for now creates a normal single-prompt agent
+  badged custom_llm); Step B category-tabbed template grid + scratch + generate.
+  Selecting + Create creates immediately and redirects to /agents/[id]. /agents/
+  new is now just redirect('/agents'); signup/agent still renders AgentWizard.
+- Agents list is a table (agents-table.tsx) not cards: Agent Name, Type badge,
+  Voice (resolved from listVoices once/request), Phone (phone_numbers), Edited by
+  (updated_by + relative time). Client-side name search. Row ⋮: Duplicate
+  (createStoredAgent copy "Copy of X"), Export (client JSON download {agentType,
+  template, agentConfig} — provider ids live in a column, never in config),
+  Delete (confirm dialog). Top-bar Import = upload that JSON → createAgentAction.
+- Acceptance verified offline: typecheck + lint (provider fence intact) + build
+  clean, 124 tests pass (stored.test: normalize idempotency/v1→v2/bootstrap +
+  scratch disclosure/opt-out; templates.test 33). migrate idempotency proven via
+  the stable() key-order compare. Live acceptance still needs the stack stood up
+  (no Supabase/OpenAI/provider env as of Phase 10): apply 0009, run
+  migrate-agent-config twice, create via template/scratch/generate, duplicate +
+  export + import round-trip, delete a scratch agent (provider GET → 404) and
+  confirm it's blocked while a campaign is running/paused.

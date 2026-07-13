@@ -86,6 +86,30 @@ export function conductRules(p: BusinessProfile): string {
 7. If the person asks not to be called again, to be removed from a list, or to stop receiving calls: comply IMMEDIATELY. Apologize once, confirm plainly that they will not be contacted again, and end the call politely. Never argue, negotiate, or try to keep them on the line.${learnedAdjustments(p)}`
 }
 
+// ---------------------------------------------------------------------------
+// Phase 10: "Generate from prompt" hands us an LLM-drafted prompt. Whatever the
+// model returns, we ALWAYS append our mandatory conduct rules and guarantee the
+// greeting discloses the AI before saving. Pure — the server action calls this.
+// ---------------------------------------------------------------------------
+export function ensureDisclosureAndConduct(
+  cfg: { name: string; systemPrompt: string; firstMessage: string; voiceId: string },
+  businessName: string
+): { name: string; systemPrompt: string; firstMessage: string; voiceId: string } {
+  // conductRules only needs a name; the rest of the profile is irrelevant here.
+  const p = {
+    businessName,
+    industry: '',
+    hours: '',
+    services: [],
+    faqs: [],
+    greetingStyle: 'friendly' as const,
+    voiceId: cfg.voiceId,
+  }
+  const firstMessage = /\bAI\b/i.test(cfg.firstMessage) ? cfg.firstMessage : greeting(p)
+  const systemPrompt = `${cfg.systemPrompt.trim()}\n\n${conductRules(p)}`
+  return { ...cfg, firstMessage, systemPrompt }
+}
+
 /** Phase 8: reviewed-and-applied suggestions, appended after the conduct rules. */
 function learnedAdjustments(p: BusinessProfile): string {
   if (!p.extraInstructions?.length) return ''

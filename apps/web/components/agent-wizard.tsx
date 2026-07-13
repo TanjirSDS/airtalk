@@ -1,7 +1,7 @@
 'use client'
 
 import type { Voice } from '@airtalk/engine'
-import { TEMPLATE_INFO, type TemplateKey } from '@airtalk/engine/templates'
+import { buildAgentConfig, TEMPLATE_INFO, type TemplateKey } from '@airtalk/engine/templates'
 import { useState, useTransition } from 'react'
 import { createAgentAction } from '../app/agents/actions'
 import {
@@ -32,7 +32,14 @@ export function AgentWizard({ voices, redirectTo }: { voices: Voice[]; redirectT
   function create() {
     setError(null)
     startTransition(async () => {
-      const res = await createAgentAction({ template, profile: { ...clean, voiceId }, redirectTo })
+      const seed = { ...clean, voiceId }
+      const res = await createAgentAction({
+        agentType: 'single',
+        template,
+        seed,
+        agentConfig: buildAgentConfig(template, seed),
+        redirectTo,
+      })
       if (res?.error) setError(res.error) // on success the action redirects
     })
   }
