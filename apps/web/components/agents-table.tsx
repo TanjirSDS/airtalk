@@ -4,7 +4,7 @@ import type { AgentType } from '@airtalk/engine/templates'
 import Link from 'next/link'
 import { useRef, useState, useTransition } from 'react'
 import { toast } from 'sonner'
-import { createAgentAction, deleteAgentAction, duplicateAgentAction } from '../app/agents/actions'
+import { convertToFlowAction, createAgentAction, deleteAgentAction, duplicateAgentAction } from '../app/agents/actions'
 import { CopyIcon, DownloadIcon, MoreIcon, SearchIcon, UploadIcon } from './icons'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -76,6 +76,7 @@ export function AgentsTable({
 }) {
   const [query, setQuery] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<AgentRow | null>(null)
+  const [convertTarget, setConvertTarget] = useState<AgentRow | null>(null)
   const [pending, startTransition] = useTransition()
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -108,6 +109,19 @@ export function AgentsTable({
       else {
         toast.success(`Deleted “${a.name}”`)
         setDeleteTarget(null)
+      }
+    })
+  }
+
+  function confirmConvert() {
+    if (!convertTarget) return
+    const a = convertTarget
+    startTransition(async () => {
+      const res = await convertToFlowAction(a.id)
+      if (res?.error) toast.error(res.error)
+      else {
+        toast.success(`Converted “${a.name}” to a flow`)
+        setConvertTarget(null)
       }
     })
   }
@@ -213,6 +227,9 @@ export function AgentsTable({
                       <DropdownMenuItem onClick={() => exportAgent(a)}>
                         <DownloadIcon /> Export
                       </DropdownMenuItem>
+                      {a.agentType === 'single' && (
+                        <DropdownMenuItem onClick={() => setConvertTarget(a)}>Convert to flow</DropdownMenuItem>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-destructive focus:text-destructive"
@@ -251,6 +268,26 @@ export function AgentsTable({
             </Button>
             <Button variant="destructive" onClick={confirmDelete} disabled={pending}>
               {pending ? 'Deleting…' : 'Delete agent'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!convertTarget} onOpenChange={(o) => !o && setConvertTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Convert to Conversational Flow</DialogTitle>
+            <DialogDescription>
+              “{convertTarget?.name}” becomes a visual flow: its current prompt moves into a Welcome step of a
+              Begin → Welcome → End graph. This is one-way — you can&apos;t convert a flow back to a single prompt.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConvertTarget(null)} disabled={pending}>
+              Cancel
+            </Button>
+            <Button onClick={confirmConvert} disabled={pending}>
+              {pending ? 'Converting…' : 'Convert to flow'}
             </Button>
           </DialogFooter>
         </DialogContent>

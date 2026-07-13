@@ -28,6 +28,22 @@ export {
   type SuggestionType,
 } from './merge'
 export { getSection, hasSection, removeSection, setSection } from './managed'
+export {
+  defaultWorkflow,
+  E164,
+  END_NODE_ID,
+  validateWorkflow,
+  WELCOME_NODE_ID,
+  wrapPromptAsFlow,
+} from './workflow'
+export type {
+  WorkflowEdge,
+  WorkflowEntryBehavior,
+  WorkflowGraph,
+  WorkflowKb,
+  WorkflowNode,
+  WorkflowNodeType,
+} from '../types'
 export { DEFAULT_LLM, MODEL_INFO, modelLabel, type ModelInfo } from './model-info'
 export { CALL_DEFAULTS, DEFAULT_ANALYSIS, SPEECH_DEFAULTS } from './settings-defaults'
 export {

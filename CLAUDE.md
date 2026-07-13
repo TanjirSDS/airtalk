@@ -1137,3 +1137,126 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   a webhook endpoint records attempts and honors the retry→dead path; disabling an
   endpoint stops deliveries mid-flight; org B can't read org A's alerts/endpoints/
   deliveries (RLS); confirm a real consumer verifies our airtalk-signature.
+
+### Phase 18 conversational flow / agent workflows (2026-07-13)
+- VERIFIED EL WORKFLOW SCHEMA (rule 6 pass, 2026-07-13; primary source = the Fern-
+  auto-generated elevenlabs-python SDK types on `main`, which expose the exact wire
+  field names the Fern-over-fetch OpenAPI truncates; prose docs + changelogs
+  corroborate). ALL cited in packages/engine/src/elevenlabs.ts flow mapping:
+  - **PLACEMENT CORRECTION**: `workflow` is a **TOP-LEVEL sibling of conversation_config**
+    in the create/update body — NOT `conversation_config.workflow` (the spec's
+    assumption + the prose docs describe the CLI pull/push view; the REST body puts it
+    at top level per SDK raw_client create/update). GET /v1/convai/agents/{id} returns a
+    top-level `workflow` too → hydration works. Body: `{conversation_config, platform_
+    settings, workflow, name, tags}`.
+  - **workflow object** = `{nodes: Dict<id,node>, edges: Dict<id,edge>, prevent_subagent_
+    loops?: bool}`. nodes AND edges are **id-keyed MAPS, not arrays**. There is **no
+    start_node_id field** — the entry point is the node whose `type == "start"`.
+  - **Node types** (discriminated on `type`; every node carries `position:{x,y}` and
+    `edge_order: string[]` = outgoing edge ids in evaluation order):
+    | neutral | EL `type` | fields (verified) |
+    |---|---|---|
+    | (begin) | `start` | position, edge_order only — no other fields |
+    | conversation | `override_agent` | `label` (REQUIRED), `additional_prompt?`, `additional_tool_ids?: string[]`, `additional_knowledge_base?: {type,id,name}[]`, `conversation_config?` (full override), `entry_behavior?: generate_immediately\|wait_for_user\|auto` |
+    | transfer_number | `phone_number` | `transfer_destination` (REQUIRED, union `{type:"phone",phone_number}` \| sip_uri \| *_dynamic_variable), `transfer_type?: blind\|conference\|sip_refer`, uui/post_dial_digits/custom_sip_headers optional |
+    | end | `end` | position, edge_order only |
+  - **OMITTED node types** (locked, per spec): `standalone_agent` (agent handoff),
+    `tool` (forced tool-dispatch), and `say` (INFERRED-only: referenced by
+    entry_behavior's docstring but NOT a member of the SDK node union I inspected —
+    do NOT build on it). Retell's Press-Digit/In-Call-SMS/Code/Logic-Split have no EL
+    equivalent → omitted.
+  - **Edges** = `WorkflowEdgeModel {source, target, forward_condition, backward_condition?}`.
+    `forward_condition` union: `{type:"llm", condition:<NL string>, label?}` (the
+    routing condition) | `{type:"unconditional", label?}` | `{type:"expression",
+    expression:<ast>}` | `{type:"result", successful:bool}` (tool-node routing). We use
+    llm (condition present) and unconditional (condition empty).
+  - **Starting-node override**: `starting_workflow_node_id: string?` lives on
+    `ConversationInitiationClientDataRequest` (the SDK/WebSocket startSession init +
+    the Twilio personalization webhook), gated by the opt-in flag at
+    `platform_settings.overrides.enable_starting_workflow_node_id_from_client: bool`
+    ("if false, sending it fails conversation start"; non-existent node → default entry).
+  - **STARTING-NODE VERDICT** (item 6): the plain `<elevenlabs-convai>` EMBED WIDGET
+    does **NOT** support starting_workflow_node_id — it exposes only `dynamic-variables`
+    + `conversation_config_override`/`override-*` attributes, and starting node is a
+    SEPARATE top-level init-data field, absent from the widget/overrides docs
+    (VERIFIED-absent; a live widget-attribute probe would upgrade to confirmed). So the
+    in-app Test WIDGET always starts at the entry node. Resolution: (a) toProviderConfig
+    sets `enable_starting_workflow_node_id_from_client=true` on flow agents so real
+    SDK/phone callers CAN start at a chosen node; (b) the Test-panel Starting-Node
+    picker is wired through the **simulate-conversation** path (branch #2) — SimulationSpec
+    gained `startingNodeId?`, passed in the simulate body as conversation-initiation data
+    (the field's home is the verified init-data request; the simulate endpoint's
+    acceptance of it is the UNVERIFIED part, marked VERIFY-live like the Phase-16 simulate
+    mapping itself). LIVE items to confirm when keys exist: top-level `workflow` body
+    placement on a real create/GET; `phone_number.transfer_destination` discriminator;
+    that the widget truly can't carry starting_workflow_node_id; simulate accepting it.
+- NO MIGRATION: the workflow rides AgentConfig.workflow → StoredAgentConfig.agentConfig,
+  already the fully-versioned jsonb (agents.config + agent_config_versions.config).
+  agent_type 'flow' has been a valid enum since 0009. So canvas state lives ONLY in
+  agents.config / agent_config_versions (acceptance item) — no table/column added.
+- NEUTRAL MODEL (types.ts AgentConfig.workflow, minimal per spec, extended only where EL
+  has a real field): WorkflowGraph {startNodeId, nodes[], edges[]}; node {id, type:
+  'conversation'|'transfer_number'|'end', label?, prompt?, staticText?, toolIds?, kb?,
+  entryBehavior?, transferTo?, position?}; edge {from, to, condition?}. DEVIATIONS from the
+  spec's field list, both forced by rule 1 (the engine can't read our DB): kb is
+  {knowledgeId,name,type}[] not `kbIds` (EL additional_knowledge_base needs the full
+  {type,id,name} locator); `staticText` compiles to a constrained additional_prompt ("Say
+  this line verbatim…") on an override_agent node — the SDK node union has no dedicated
+  'say' node so we don't depend on one (so staticText→prompt is one-way on hydration; the
+  app hydrates from our own stored graph, not the provider, so it never matters in the UI).
+- NODE-TYPE COVERAGE (built vs omitted):
+  | neutral | EL type | built? |
+  |---|---|---|
+  | (Begin) | start | YES — synthesized by the adapter + canvas (not a neutral node) |
+  | conversation | override_agent | YES — label/prompt|staticText/toolIds/kb/entry_behavior |
+  | transfer_number | phone_number | YES — transfer_destination {type:'phone',phone_number} |
+  | end | end | YES |
+  | (agent handoff) | standalone_agent | OMITTED (locked — not in spec's 3 types) |
+  | (forced tool) | tool | OMITTED (locked) |
+  Retell's Press-Digit / In-Call-SMS / Code / Logic-Split have no EL equivalent → OMITTED.
+- ADAPTER (packages/engine/src/workflow-map.ts, pure + tested; elevenlabs.ts wires it):
+  workflowToProvider synthesizes the EL `start` node (id 'start') + an unconditional
+  start→entry edge and emits id-keyed node/edge MAPS with edge_order per node; toProviderConfig
+  puts `workflow` at the TOP LEVEL and sets the opt-in overrides flag on flow agents.
+  workflowFromProvider collapses `start` back into startNodeId + drops the synthetic edge.
+  New engine.getAgent(providerAgentId)→AgentConfig (GET returns top-level workflow) hydrates
+  + enables the offline round-trip test (workflow-map.test: neutral→provider→neutral, 9 cases).
+- CANVAS (apps/web/components/flow/**, @xyflow/react v12, fenced by eslint + lazy-loaded via
+  next/dynamic ssr:false so single/custom agents never pull the bundle — confirmed code-split
+  in the build). agent_type 'flow' swaps the prompt pane for FlowCanvas; header/versions/share/
+  test/right-rail reused. Begin is a synthetic non-deletable node whose single (non-deletable,
+  reconnectable) edge names startNodeId; onBeforeDelete also blocks deleting the entry node.
+  Left palette (only Conversation/Transfer/End), HTML5 drag-to-add, custom FlowEdge with an
+  inline-editable condition label (EdgeLabelRenderer), node config panel (prompt-vs-static
+  toggle, node-level KB switches from kb_documents, transfer E.164; node-level TOOLS deferred
+  — no tool registry exists yet, the neutral toolIds + adapter mapping are in place so a future
+  registry just wires the picker), Begin who-speaks-first = the entry node's entry_behavior
+  (this finally enables the Phase-11-stubbed 'AI improvises opening' = generate_immediately),
+  bottom toolbar select/pan/auto-layout(dagre, flow-layout.ts)/find-node, Controls (zoom) +
+  MiniMap. Node/edge positions round-trip to EL node.position.
+- GLOBAL SETTINGS panel (nothing selected): global prompt textarea + the Phase 12 SettingsRail
+  (shared component reused verbatim). Functions/MCPs stay node-level for flow (per handoff);
+  the server page passes rail=null for flow and threads node-level kb_documents in instead.
+- VALIDATION (templates/workflow.ts validateWorkflow, pure + tested 10 cases; run BOTH client
+  [blocks Save + error banner] AND server [updateAgentAction re-checks when agentType==='flow',
+  the real gate]): exactly one start path (startNodeId exists; every non-entry node has an
+  incoming edge), no orphan/unreachable nodes, conversation nodes aren't dead-ends, ≥1 End is
+  reachable, every branch (node with >1 outgoing edge) has a non-empty condition, transfer nodes
+  carry a valid E.164. Save = ONE updateAgent + ONE version row (rule 4) carrying the whole
+  StoredAgentConfig incl. the graph → rollback restores it intact (stored.test proves the
+  workflow survives normalizeStoredConfig round-trip so the key={version} remount re-renders
+  the canvas correctly).
+- CONVERT single→flow (convertToFlowAction, one-way, confirm dialog on BOTH the agents-table ⋮
+  [single rows only] and the builder header): wrapPromptAsFlow puts the current prompt into the
+  Welcome node of a fresh default graph, flips agent_type to 'flow', pushes to the provider,
+  appends a version. No flow→single. The global prompt is kept as the shared persona.
+- Acceptance verified OFFLINE (no Supabase/EL env as of Phase 18): typecheck + lint (both
+  fences — provider + a NEW @xyflow fence confined to components/flow/**, negatively probed to
+  confirm it catches violations) + build clean (flow route emits, xyflow code-split); 225 tests
+  pass / 7 live-skip (+19 engine: workflow-map round-trip/mapping + validateWorkflow rules +
+  defaultWorkflow/wrapPromptAsFlow; +1 stored flow round-trip). LIVE acceptance still needs the
+  stack: build the default flow + a 4-node booking flow against a real EL agent and place a live
+  call that routes through a condition edge (confirm the top-level `workflow` body + node/edge
+  shapes on the real create/GET); rollback to a pre-flow version and between two flow versions
+  re-renders the canvas; a starting-node simulation confirms whether simulate accepts
+  starting_workflow_node_id (else fall back to the SDK conversation-initiation path).

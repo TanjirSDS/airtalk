@@ -14,6 +14,7 @@ import {
 } from './ui/dialog'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
+import { Select } from './ui/select'
 import { Textarea } from './ui/textarea'
 
 export interface SimTestCase {
@@ -41,21 +42,25 @@ export function SimulationPanel({
   agentId,
   canRun,
   testCases,
+  startNodes = [],
 }: {
   agentId: string
   canRun: boolean
   testCases: SimTestCase[]
+  /** Flow agents (Phase 18): the nodes the sim can start at (Test-panel Starting Node picker). */
+  startNodes?: { id: string; label: string }[]
 }) {
   const [editing, setEditing] = useState<SimTestCase | null>(null)
   const [creating, setCreating] = useState(false)
   const [viewing, setViewing] = useState<SimTestCase | null>(null)
   const [runningId, setRunningId] = useState<string | null>(null)
+  const [startAt, setStartAt] = useState('')
   const [pending, startTransition] = useTransition()
 
   function run(id: string) {
     setRunningId(id)
     startTransition(async () => {
-      const res = await runSimulationAction(agentId, id)
+      const res = await runSimulationAction(agentId, id, startAt || undefined)
       setRunningId(null)
       if (res.error) toast.error(res.error)
       else if (res.result?.passed === true) toast.success('Simulation passed')
@@ -91,6 +96,30 @@ export function SimulationPanel({
         <p className="mt-3 rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn">
           Save this agent first — simulation needs a provider agent to run against.
         </p>
+      )}
+
+      {startNodes.length > 0 && (
+        <div className="mt-3 flex items-center gap-2">
+          <Label htmlFor="start-at" className="text-xs">
+            Start at
+          </Label>
+          <Select
+            id="start-at"
+            value={startAt}
+            onChange={(e) => setStartAt(e.target.value)}
+            className="h-8 w-auto text-xs"
+          >
+            <option value="">Begin (default entry)</option>
+            {startNodes.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.label}
+              </option>
+            ))}
+          </Select>
+          <span className="text-[11px] text-muted-foreground">
+            Starting mid-flow uses the provider’s starting-node override (verify on a live run).
+          </span>
+        </div>
       )}
 
       {testCases.length === 0 ? (

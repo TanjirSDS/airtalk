@@ -2,6 +2,7 @@
 
 import {
   buildAgentConfig,
+  defaultWorkflow,
   scratchAgentConfig,
   TEMPLATE_CATEGORIES,
   TEMPLATE_INFO,
@@ -33,9 +34,7 @@ const TYPE_CARDS: { type: AgentType; name: string; blurb: string; disabled?: boo
   {
     type: 'flow',
     name: 'Conversational Flow',
-    blurb: 'Production-ready, deterministic conversations.',
-    disabled: true,
-    hint: 'Coming soon',
+    blurb: 'Production-ready, deterministic conversations on a visual canvas.',
   },
 ]
 
@@ -82,6 +81,9 @@ export function CreateAgentModal({
 
   function pickType(t: AgentType) {
     setAgentType(t)
+    // Flows seed a default graph (Begin → Welcome → End), not a template — preselect
+    // the scratch-style config so Step B just collects a name + voice.
+    if (t === 'flow') setChoice('scratch')
     setStep('template')
   }
 
@@ -102,7 +104,14 @@ export function CreateAgentModal({
     setError(null)
     startTransition(async () => {
       let res
-      if (choice === 'generate') {
+      if (agentType === 'flow') {
+        // Default seed graph (item 2); the canvas takes over from here.
+        res = await createAgentAction({
+          agentType,
+          template: null,
+          agentConfig: { ...scratchAgentConfig({ businessName, hours }, voiceId), firstMessage: '', workflow: defaultWorkflow() },
+        })
+      } else if (choice === 'generate') {
         const g = await generateDraftAction(description)
         if (g.error || !g.draft) {
           setError(g.error ?? 'Could not generate a draft')
@@ -217,47 +226,57 @@ export function CreateAgentModal({
 
         {step === 'template' && (
           <div className="space-y-4">
-            <Tabs value={category} onValueChange={(v) => setCategory(v as 'All' | TemplateCategory)}>
-              <TabsList className="flex-wrap">
-                <TabsTrigger value="All">All</TabsTrigger>
-                {TEMPLATE_CATEGORIES.map((c) => (
-                  <TabsTrigger key={c} value={c}>
-                    {c}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
+            {agentType === 'flow' ? (
+              <div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground">
+                Your flow starts as <span className="font-medium text-foreground">Begin → Welcome → End Call</span>.
+                You&apos;ll design the rest on the visual canvas — add steps, conditions, transfers, and per-step
+                knowledge.
+              </div>
+            ) : (
+              <>
+                <Tabs value={category} onValueChange={(v) => setCategory(v as 'All' | TemplateCategory)}>
+                  <TabsList className="flex-wrap">
+                    <TabsTrigger value="All">All</TabsTrigger>
+                    {TEMPLATE_CATEGORIES.map((c) => (
+                      <TabsTrigger key={c} value={c}>
+                        {c}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
 
-            <div className="grid max-h-[46vh] gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
-              {shownTemplates.map((t) => (
-                <ChoiceCard
-                  key={t.key}
-                  active={choice === t.key}
-                  title={t.name}
-                  desc={t.description}
-                  onClick={() => setChoice(t.key)}
-                />
-              ))}
-              {category === 'All' && (
-                <>
-                  <ChoiceCard
-                    active={choice === 'scratch'}
-                    title="Build from scratch"
-                    desc="A blank prompt with the required sections — write it yourself."
-                    onClick={() => setChoice('scratch')}
-                  />
-                  {openaiEnabled && (
+                <div className="grid max-h-[46vh] gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
+                  {shownTemplates.map((t) => (
                     <ChoiceCard
-                      active={choice === 'generate'}
-                      title="Generate from prompt"
-                      desc="Describe your business and we'll draft the agent for you."
-                      icon={<SparkleIcon className="h-4 w-4 text-brand" />}
-                      onClick={() => setChoice('generate')}
+                      key={t.key}
+                      active={choice === t.key}
+                      title={t.name}
+                      desc={t.description}
+                      onClick={() => setChoice(t.key)}
                     />
+                  ))}
+                  {category === 'All' && (
+                    <>
+                      <ChoiceCard
+                        active={choice === 'scratch'}
+                        title="Build from scratch"
+                        desc="A blank prompt with the required sections — write it yourself."
+                        onClick={() => setChoice('scratch')}
+                      />
+                      {openaiEnabled && (
+                        <ChoiceCard
+                          active={choice === 'generate'}
+                          title="Generate from prompt"
+                          desc="Describe your business and we'll draft the agent for you."
+                          icon={<SparkleIcon className="h-4 w-4 text-brand" />}
+                          onClick={() => setChoice('generate')}
+                        />
+                      )}
+                    </>
                   )}
-                </>
-              )}
-            </div>
+                </div>
+              </>
+            )}
 
             {choice === 'generate' ? (
               <div>
