@@ -27,6 +27,7 @@ async function main() {
   if (plansErr) throw new Error(`plans: ${plansErr.message} — did you apply 0004_orgs_rls.sql?`)
 
   const orgIds: string[] = []
+  const userIds: string[] = []
   for (const spec of ORGS) {
     // user: magic-link only, so just create it confirmed; no password needed
     const { data: created, error: userErr } = await db.auth.admin.createUser({
@@ -53,6 +54,7 @@ async function main() {
       orgId = org.id
     }
     orgIds.push(orgId!)
+    userIds.push(userId!)
 
     const { error: memberErr } = await db
       .from('org_members')
@@ -60,6 +62,14 @@ async function main() {
     if (memberErr) throw new Error(memberErr.message)
     console.log(`✓ ${spec.name} (${spec.plan}, cap ${cap} min) — owner ${spec.email}`)
   }
+
+  // Phase 9 workspace-switcher acceptance: owner A also belongs to org B, so a
+  // single signed-in user sees both workspaces and can switch between them.
+  const { error: crossErr } = await db
+    .from('org_members')
+    .upsert({ org_id: orgIds[1], user_id: userIds[0], role: 'member' })
+  if (crossErr) throw new Error(`cross-membership: ${crossErr.message}`)
+  console.log(`✓ ${ORGS[0].email} also a member of ${ORGS[1].name} (switcher test)`)
 
   // Adopt pre-Phase-4 rows so they don't vanish behind RLS.
   for (const table of ['agents', 'phone_numbers', 'calls'] as const) {

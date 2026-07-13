@@ -5,9 +5,11 @@ import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { AppShell } from '../components/app-shell'
 import { Logo, Waveform } from '../components/icons'
+import { ThemeProvider } from '../components/theme-provider'
+import { Toaster } from '../components/ui/sonner'
 import { exitViewAsAction } from './admin/actions'
 import { graceDaysLeft } from '../lib/billing-math'
-import { activeOrg, currentUsage } from '../lib/org'
+import { activeOrg, currentUsage, listMemberships } from '../lib/org'
 import { userClient } from '../lib/supabase-server'
 import './globals.css'
 
@@ -142,31 +144,62 @@ function Banners() {
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const org = await activeOrg()
+
   return (
-    <html lang="en" className={`${display.variable} ${sans.variable}`}>
+    <html lang="en" suppressHydrationWarning className={`${display.variable} ${sans.variable}`}>
       <body className="antialiased">
-        {org ? (
-          <AppShell
-            org={{ name: org.name, planName: org.plan.name, role: org.role }}
-            banner={<Banners />}
-            signOut={signOut}
-          >
-            {children}
-          </AppShell>
-        ) : (
-          // Signed-out (login / signup): a clean centered brand canvas.
-          <div className="flex min-h-screen flex-col">
-            <div className="flex items-center gap-3 px-6 py-5">
-              <Logo />
-              <span className="font-display text-lg font-semibold tracking-tight">Airtalk</span>
-              <Waveform className="ml-1 text-live" bars={4} />
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+          {org ? (
+            <AppShell data={await shellData(org)} banner={<Banners />} signOut={signOut}>
+              {children}
+            </AppShell>
+          ) : (
+            // Signed-out (login / signup): a clean centered brand canvas.
+            <div className="flex min-h-screen flex-col">
+              <div className="flex items-center gap-3 px-6 py-5">
+                <Logo />
+                <span className="font-display text-lg font-semibold tracking-tight">Airtalk</span>
+                <Waveform className="ml-1 text-live" bars={4} />
+              </div>
+              <main className="flex flex-1 items-center justify-center px-6 pb-24">
+                <div className="w-full">{children}</div>
+              </main>
             </div>
-            <main className="flex flex-1 items-center justify-center px-6 pb-24">
-              <div className="w-full">{children}</div>
-            </main>
-          </div>
-        )}
+          )}
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   )
+}
+
+// Assemble everything the sidebar shell needs in one place.
+async function shellData(org: NonNullable<Awaited<ReturnType<typeof activeOrg>>>) {
+  const [usage, memberships, jar, db] = await Promise.all([
+    currentUsage(org.orgId),
+    listMemberships(),
+    cookies(),
+    userClient(),
+  ])
+  const {
+    data: { user },
+  } = await db.auth.getUser()
+  const now = new Date()
+  return {
+    activeOrgId: org.orgId,
+    orgName: org.name,
+    planName: org.plan.name,
+    role: org.role,
+    memberships,
+    userEmail: user?.email ?? null,
+    initialCollapsed: jar.get('sidebar-collapsed')?.value === '1',
+    usage: {
+      minutesUsed: usage?.minutes_used ?? 0,
+      minutesCap: usage?.minutes_cap ?? org.minutesCap,
+      overageMinutes: usage?.overage_minutes ?? 0,
+      overagePolicy: org.overagePolicy,
+      planName: org.plan.name,
+      periodLabel: now.toLocaleString('en-US', { month: 'long', year: 'numeric' }),
+    },
+  }
 }
