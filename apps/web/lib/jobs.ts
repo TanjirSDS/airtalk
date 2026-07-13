@@ -24,7 +24,7 @@ import {
 import { dialChunk } from './campaign-runner'
 import { inngest } from './inngest'
 import { extractSuggestions, type CallForLearning } from './learning'
-import type { StoredAgentConfig } from './types'
+import { normalizeStoredConfigSafe } from './types'
 import { externalNumber, recordOptOut } from './opt-out'
 import { classifyCall } from './outcome'
 import { reconcileYesterday } from './reconcile'
@@ -291,8 +291,8 @@ const agentLearning = inngest.createFunction(
 
       for (const agent of agents ?? []) {
         const res = await step.run(`learn-${agent.id}`, async () => {
-          const stored = agent.config as StoredAgentConfig | null
-          if (!stored?.profile) return null // bootstrap-era agent, nothing to merge into
+          const stored = normalizeStoredConfigSafe(agent.config)
+          if (!stored?.seed) return null // no seed profile → nothing to extract against (Phase 11)
           const { count } = await db
             .from('agent_suggestions')
             .select('id', { count: 'exact', head: true })
@@ -312,7 +312,7 @@ const agentLearning = inngest.createFunction(
           )
           if (!usable.length) return null
 
-          const result = await extractSuggestions(stored.profile, usable, key)
+          const result = await extractSuggestions(stored.seed, usable, key)
           if (!result) return null
           if (result.suggestions.length) {
             const { error: insErr } = await db.from('agent_suggestions').insert(

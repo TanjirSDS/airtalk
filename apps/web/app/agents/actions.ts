@@ -1,10 +1,16 @@
 'use server'
 
 import { getEnv, serviceClient, type SupabaseClient } from '@airtalk/db'
+import type { AgentConfig } from '@airtalk/engine'
 import {
   applySuggestionToProfile,
   buildAgentConfig,
+  ensureDisclosureAndConduct,
+  normalizeStoredConfig,
+  templates,
+  type AgentType,
   type BusinessProfile,
+  type StoredAgentConfig,
   type SuggestionPayload,
   type SuggestionType,
   type TemplateKey,
@@ -14,9 +20,9 @@ import { redirect } from 'next/navigation'
 import { calcomBookingTool, listEventTypes } from '../../lib/calcom'
 import { appUrl } from '../../lib/email'
 import { makeEngine } from '../../lib/engine'
+import { generateAgentDraft } from '../../lib/generate-agent'
 import { activeOrg, type ActiveOrg } from '../../lib/org'
 import { userClient } from '../../lib/supabase-server'
-import type { StoredAgentConfig } from '../../lib/types'
 
 // Phase 4: all DB access here goes through the RLS-scoped user client, so a
 // member can only ever touch their own org's rows — no manual org checks.
@@ -25,6 +31,14 @@ async function requireOrg(): Promise<ActiveOrg> {
   const org = await activeOrg()
   if (!org) throw new Error('You are not a member of any organization')
   return org
+}
+
+/** updated_by (Phase 10): the signed-in user's email, set on every mutation. */
+async function currentUserEmail(db: SupabaseClient): Promise<string> {
+  const {
+    data: { user },
+  } = await db.auth.getUser()
+  return user?.email ?? 'system'
 }
 
 // Rule 4: every save appends a version row; version numbers are per-agent.
@@ -52,9 +66,57 @@ async function getAgentRow(db: SupabaseClient, id: string) {
   return data
 }
 
+function validConfig(c: AgentConfig | undefined): c is AgentConfig {
+  return !!c && typeof c.name === 'string' && typeof c.systemPrompt === 'string' && typeof c.voiceId === 'string'
+}
+
+/**
+ * The one create path (rule 4: provider agent → row → version 1). Every surface
+ * — the create modal, import, duplicate and the signup wizard — funnels here.
+ * agentConfig never carries provider ids, so a fresh provider agent is minted.
+ */
+async function createStoredAgent(
+  db: SupabaseClient,
+  org: ActiveOrg,
+  stored: StoredAgentConfig,
+  email: string
+): Promise<string> {
+  if (!validConfig(stored.agentConfig)) throw new Error('Invalid agent configuration')
+  // Plan limit (Phase 4). Create surfaces show it as UX — this is the real gate.
+  const { count } = await db
+    .from('agents')
+    .select('id', { count: 'exact', head: true })
+    .eq('org_id', org.orgId)
+  if ((count ?? 0) >= org.plan.maxAgents) {
+    throw new Error(`Your ${org.plan.name} plan allows ${org.plan.maxAgents} agent(s)`)
+  }
+
+  const { providerAgentId } = await makeEngine().createAgent(stored.agentConfig)
+  const { data, error } = await db
+    .from('agents')
+    .insert({
+      org_id: org.orgId,
+      name: stored.agentConfig.name,
+      provider: 'elevenlabs',
+      provider_agent_id: providerAgentId,
+      config: stored,
+      agent_type: stored.agentType,
+      updated_by: email,
+      updated_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single()
+  if (error) throw new Error(error.message)
+  await insertVersion(db, data.id, stored)
+  return data.id
+}
+
 export async function createAgentAction(input: {
-  template: TemplateKey
-  profile: BusinessProfile
+  agentType: AgentType
+  /** null for scratch / generated / imported agents. */
+  template: TemplateKey | null
+  seed?: BusinessProfile
+  agentConfig: AgentConfig
   /** Signup flow continues to the number step; default is the agent page. */
   redirectTo?: string
 }) {
@@ -62,32 +124,14 @@ export async function createAgentAction(input: {
   let id: string
   try {
     const org = await requireOrg()
-    // Plan limit (Phase 4). The wizard page also checks — this is the real gate.
-    const { count } = await db
-      .from('agents')
-      .select('id', { count: 'exact', head: true })
-      .eq('org_id', org.orgId)
-    if ((count ?? 0) >= org.plan.maxAgents) {
-      throw new Error(`Your ${org.plan.name} plan allows ${org.plan.maxAgents} agent(s)`)
+    const email = await currentUserEmail(db)
+    const stored: StoredAgentConfig = {
+      agentType: input.agentType,
+      template: input.template,
+      ...(input.seed ? { seed: input.seed } : {}),
+      agentConfig: input.agentConfig,
     }
-
-    const agentConfig = buildAgentConfig(input.template, input.profile)
-    const { providerAgentId } = await makeEngine().createAgent(agentConfig)
-    const stored: StoredAgentConfig = { template: input.template, profile: input.profile, agentConfig }
-    const { data, error } = await db
-      .from('agents')
-      .insert({
-        org_id: org.orgId,
-        name: agentConfig.name,
-        provider: 'elevenlabs',
-        provider_agent_id: providerAgentId,
-        config: stored,
-      })
-      .select('id')
-      .single()
-    if (error) throw new Error(error.message)
-    id = data.id
-    await insertVersion(db, id, stored)
+    id = await createStoredAgent(db, org, stored, email)
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) }
   }
@@ -99,22 +143,37 @@ export async function createAgentAction(input: {
   redirect(dest)
 }
 
+/** Freeform-first edit (Phase 10): the prompt text is the source of truth. */
 export async function updateAgentAction(
   agentId: string,
-  input: { template: TemplateKey; profile: BusinessProfile }
+  input: { name: string; systemPrompt: string; firstMessage: string; voiceId: string }
 ) {
   const db = await userClient()
   try {
+    const email = await currentUserEmail(db)
     const agent = await getAgentRow(db, agentId)
-    const agentConfig = buildAgentConfig(input.template, input.profile)
+    const stored = normalizeStoredConfig(agent.config)
+    const agentConfig: AgentConfig = {
+      ...stored.agentConfig,
+      name: input.name.trim() || stored.agentConfig.name,
+      systemPrompt: input.systemPrompt,
+      firstMessage: input.firstMessage,
+      voiceId: input.voiceId,
+    }
+    if (!validConfig(agentConfig)) throw new Error('Name, prompt and voice are required')
     await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
-    const stored: StoredAgentConfig = { template: input.template, profile: input.profile, agentConfig }
+    const newStored: StoredAgentConfig = { ...stored, agentConfig }
     const { error } = await db
       .from('agents')
-      .update({ name: agentConfig.name, config: stored })
+      .update({
+        name: agentConfig.name,
+        config: newStored,
+        updated_by: email,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', agentId)
     if (error) throw new Error(error.message)
-    const version = await insertVersion(db, agentId, stored)
+    const version = await insertVersion(db, agentId, newStored)
     revalidatePath(`/agents/${agentId}`)
     return { version }
   } catch (e) {
@@ -125,6 +184,7 @@ export async function updateAgentAction(
 /** Re-applies an old version via the adapter and appends it as the newest version. */
 export async function rollbackAgentAction(agentId: string, version: number) {
   const db = await userClient()
+  const email = await currentUserEmail(db)
   const agent = await getAgentRow(db, agentId)
   const { data: old, error } = await db
     .from('agent_config_versions')
@@ -133,35 +193,128 @@ export async function rollbackAgentAction(agentId: string, version: number) {
     .eq('version', version)
     .single()
   if (error) throw new Error(error.message)
-  const stored = old.config as StoredAgentConfig
+  const stored = normalizeStoredConfig(old.config)
   await makeEngine().updateAgent(agent.provider_agent_id, stored.agentConfig)
   const { error: updErr } = await db
     .from('agents')
-    .update({ name: stored.agentConfig.name, config: stored })
+    .update({
+      name: stored.agentConfig.name,
+      config: stored,
+      updated_by: email,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', agentId)
   if (updErr) throw new Error(updErr.message)
   await insertVersion(db, agentId, stored)
   revalidatePath(`/agents/${agentId}`)
 }
 
+/** Copy an agent: fresh provider agent + row "Copy of X" + version 1 (rule 4). */
+export async function duplicateAgentAction(agentId: string) {
+  const db = await userClient()
+  try {
+    const org = await requireOrg()
+    const email = await currentUserEmail(db)
+    const agent = await getAgentRow(db, agentId)
+    const stored = normalizeStoredConfig(agent.config)
+    const copy: StoredAgentConfig = {
+      ...stored,
+      agentConfig: { ...stored.agentConfig, name: `Copy of ${stored.agentConfig.name}` },
+    }
+    await createStoredAgent(db, org, copy, email)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+  revalidatePath('/agents')
+}
+
+/**
+ * Delete an agent. Blocked (rule 3) while a campaign is running/paused — stop it
+ * first. Numbers are detached at the provider before delete; 0009's FKs then
+ * null out call history / number rows and cascade away done/draft campaigns.
+ */
+export async function deleteAgentAction(agentId: string) {
+  const db = await userClient()
+  try {
+    const agent = await getAgentRow(db, agentId)
+    const { data: camp } = await db
+      .from('campaigns')
+      .select('name, status')
+      .eq('agent_id', agentId)
+      .in('status', ['running', 'paused'])
+      .limit(1)
+      .maybeSingle()
+    if (camp) {
+      throw new Error(`Agent is used by the ${camp.status} campaign “${camp.name}”. Stop it first.`)
+    }
+    const engine = makeEngine()
+    const { data: numbers } = await db
+      .from('phone_numbers')
+      .select('provider_number_id')
+      .eq('agent_id', agentId)
+    for (const n of numbers ?? []) {
+      if (n.provider_number_id) await engine.detachNumber(n.provider_number_id).catch(() => {})
+    }
+    if (agent.provider_agent_id) await engine.deleteAgent(agent.provider_agent_id)
+    const { error } = await db.from('agents').delete().eq('id', agentId)
+    if (error) throw new Error(error.message)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+  revalidatePath('/agents')
+}
+
+/**
+ * "Generate from prompt": draft an agent with gpt-4o-mini, then ALWAYS append the
+ * disclosure greeting + conduct rules server-side before it can be saved. Returns
+ * the draft; the modal assembles the full config and calls createAgentAction.
+ */
+export async function generateDraftAction(description: string) {
+  try {
+    await requireOrg()
+    const key = getEnv().OPENAI_API_KEY
+    if (!key) return { error: 'Prompt generation is not configured' }
+    const draft = await generateAgentDraft(description, key)
+    if (!draft) return { error: 'Could not generate a draft — try describing the business differently' }
+    // Rule: always append the disclosure + conduct sections to whatever the model
+    // returns before it can be saved (voiceId is set by the caller at assembly).
+    const finished = ensureDisclosureAndConduct({ ...draft, voiceId: '' }, draft.name)
+    return {
+      draft: {
+        name: finished.name,
+        systemPrompt: finished.systemPrompt,
+        firstMessage: finished.firstMessage,
+      },
+    }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 /**
  * Phase 8: apply reviewed suggestions (one or a batch). All selected rows merge
- * into the profile, the adapter gets ONE update, and ONE new version row is
+ * into the seed profile, the adapter gets ONE update, and ONE new version row is
  * appended — so a batch-apply is a single rollback target. Rows that can't
  * merge (kb_gaps, duplicates) are skipped, not failed.
+ * Phase 11 will rework this to edit the prompt text directly; until then it is
+ * the one path that still re-renders from `seed` (only template-seeded agents
+ * with a seed can apply — freeform/scratch agents fall through gracefully).
  */
 export async function applySuggestionsAction(agentId: string, formData: FormData) {
   const db = await userClient()
   const org = await requireOrg()
   if (!org.plan.adaptiveEnabled) throw new Error('Adaptive learning requires the Pro plan')
+  const email = await currentUserEmail(db)
   const ids = (formData.getAll('id') as string[]).filter(Boolean)
   if (!ids.length) throw new Error('No suggestions selected')
   // The single-card FAQ form lets the owner edit the drafted answer before applying.
   const answerOverride = ids.length === 1 ? (formData.get('answer') as string | null)?.trim() : null
 
   const agent = await getAgentRow(db, agentId)
-  const stored = agent.config as StoredAgentConfig | null
-  if (!stored?.profile) throw new Error('This agent has no editable business profile')
+  const stored = normalizeStoredConfig(agent.config)
+  if (!stored.seed || !stored.template || !(stored.template in templates)) {
+    throw new Error('This agent has no editable template profile to merge into')
+  }
 
   const { data: rows, error } = await db
     .from('agent_suggestions')
@@ -171,7 +324,7 @@ export async function applySuggestionsAction(agentId: string, formData: FormData
     .in('id', ids)
   if (error) throw new Error(error.message)
 
-  let profile = stored.profile
+  let profile = stored.seed
   const applied: string[] = []
   for (const row of rows ?? []) {
     const payload: SuggestionPayload = { ...(row.suggestion as SuggestionPayload) }
@@ -188,10 +341,15 @@ export async function applySuggestionsAction(agentId: string, formData: FormData
 
   const agentConfig = buildAgentConfig(stored.template, profile)
   await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
-  const newStored: StoredAgentConfig = { template: stored.template, profile, agentConfig }
+  const newStored: StoredAgentConfig = { ...stored, seed: profile, agentConfig }
   const { error: updErr } = await db
     .from('agents')
-    .update({ name: agentConfig.name, config: newStored })
+    .update({
+      name: agentConfig.name,
+      config: newStored,
+      updated_by: email,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', agentId)
   if (updErr) throw new Error(updErr.message)
   const version = await insertVersion(db, agentId, newStored)
@@ -243,13 +401,15 @@ export async function removeKnowledgeAction(agentId: string, knowledgeId: string
  * Phase 7: connect Cal.com and turn the booking agent's capture-only flow into
  * real booking — store the org's key, attach the check_availability_and_book
  * tool at the provider, and re-render the prompt with liveBooking on (rule 4:
- * the config change lands as a new version row).
+ * the config change lands as a new version row). Reads the booking `seed`; Phase
+ * 11's prompt-first rework will let this operate on the prompt directly.
  */
 export async function connectCalcomAction(agentId: string, formData: FormData) {
   const db = await userClient()
   try {
     const org = await requireOrg()
     if (org.role !== 'owner') throw new Error('Only the org owner can connect a calendar')
+    const email = await currentUserEmail(db)
     const env = getEnv()
     if (!env.APP_URL || !env.AGENT_TOOLS_SECRET) {
       throw new Error('APP_URL and AGENT_TOOLS_SECRET must be configured for agent tools')
@@ -262,8 +422,8 @@ export async function connectCalcomAction(agentId: string, formData: FormData) {
     }
 
     const agent = await getAgentRow(db, agentId)
-    const stored = agent.config as StoredAgentConfig | null
-    if (stored?.template !== 'booking' || !stored.profile) {
+    const stored = normalizeStoredConfig(agent.config)
+    if (stored.template !== 'booking' || !stored.seed) {
       throw new Error('Live booking only applies to booking-template agents')
     }
 
@@ -287,13 +447,13 @@ export async function connectCalcomAction(agentId: string, formData: FormData) {
     await engine.setAgentTools(agent.provider_agent_id, [
       calcomBookingTool(agentId, appUrl(), env.AGENT_TOOLS_SECRET),
     ])
-    const profile: BusinessProfile = { ...stored.profile, liveBooking: true }
+    const profile: BusinessProfile = { ...stored.seed, liveBooking: true }
     const agentConfig = buildAgentConfig('booking', profile)
     await engine.updateAgent(agent.provider_agent_id, agentConfig)
-    const newStored: StoredAgentConfig = { template: 'booking', profile, agentConfig }
+    const newStored: StoredAgentConfig = { ...stored, seed: profile, agentConfig }
     const { error: updErr } = await db
       .from('agents')
-      .update({ config: newStored })
+      .update({ config: newStored, updated_by: email, updated_at: new Date().toISOString() })
       .eq('id', agentId)
     if (updErr) throw new Error(updErr.message)
     await insertVersion(db, agentId, newStored)

@@ -1,7 +1,8 @@
 import type { KnowledgeSource } from '@airtalk/engine'
+import { normalizeStoredConfigSafe } from '@airtalk/engine/templates'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { AgentEditForm } from '../../../components/agent-edit-form'
+import { AgentPromptForm } from '../../../components/agent-prompt-form'
 import { CalcomConnectForm } from '../../../components/calcom-connect-form'
 import { TestWidget } from '../../../components/test-widget'
 import { Badge } from '../../../components/ui/badge'
@@ -11,7 +12,6 @@ import { Input } from '../../../components/ui/input'
 import { makeEngine } from '../../../lib/engine'
 import { activeOrg } from '../../../lib/org'
 import { userClient } from '../../../lib/supabase-server'
-import type { StoredAgentConfig } from '../../../lib/types'
 import { addKnowledgeAction, removeKnowledgeAction, rollbackAgentAction } from '../actions'
 
 export const dynamic = 'force-dynamic'
@@ -43,8 +43,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     }
   }
 
-  const stored = agent.config as StoredAgentConfig | null
-  const editable = !!stored?.profile // bootstrap-era agents predate the wizard shape
+  const stored = normalizeStoredConfigSafe(agent.config)
 
   // Phase 7: booking agents can book real Cal.com slots once a calendar is connected.
   const { data: orgRow } = await db
@@ -82,33 +81,18 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
 
       <Card>
         <CardHeader>
-          <CardTitle>Business profile</CardTitle>
+          <CardTitle>Prompt</CardTitle>
           <CardDescription>
-            Saving re-generates the prompt from the template and pushes it to the provider.
+            The prompt is the source of truth — saving pushes exactly this text to the provider and
+            records a new version.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {editable ? (
-            <>
-              <AgentEditForm
-                agentId={id}
-                template={stored!.template}
-                initialProfile={stored!.profile}
-                voices={voices}
-              />
-              <details className="mt-4 text-sm">
-                <summary className="cursor-pointer text-muted-foreground">
-                  Current generated prompt
-                </summary>
-                <pre className="mt-2 whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">
-                  {stored!.agentConfig.systemPrompt}
-                </pre>
-              </details>
-            </>
+          {stored ? (
+            <AgentPromptForm agentId={id} config={stored.agentConfig} voices={voices} />
           ) : (
             <p className="text-sm text-muted-foreground">
-              This agent was created before the wizard existed and has no editable business
-              profile. Recreate it from “New agent”.
+              This agent&apos;s configuration is unreadable. Run migrate-agent-config or recreate it.
             </p>
           )}
         </CardContent>

@@ -1,13 +1,4 @@
-import type { AgentConfig } from '@airtalk/engine'
-import type { BusinessProfile, TemplateKey } from '@airtalk/engine/templates'
-
-/**
- * What we persist in agents.config and every agent_config_versions row.
- * Keeping the profile (not just the generated AgentConfig) is what makes
- * "edit the FAQs" and rollback restore the wizard form, not just the prompt.
- */
-export interface StoredAgentConfig {
-  template: TemplateKey
-  profile: BusinessProfile
-  agentConfig: AgentConfig
-}
+// StoredAgentConfig moved to '@airtalk/engine/templates' (Phase 10) so the
+// migrate script can share it. Re-exported here for existing import sites.
+export type { AgentType, StoredAgentConfig } from '@airtalk/engine/templates'
+export { normalizeStoredConfig, normalizeStoredConfigSafe } from '@airtalk/engine/templates'
