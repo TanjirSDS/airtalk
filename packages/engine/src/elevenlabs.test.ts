@@ -119,3 +119,111 @@ describe('agent config mapping (Phase 12)', () => {
     expect(captured.platform_settings.auth).toEqual({ enable_auth: true })
   })
 })
+
+// Phase 13: KB create/attach/detach + SIP import hit the verified provider paths.
+describe('knowledge base + SIP (Phase 13)', () => {
+  function stubFetch(agentKb: any[] = []) {
+    const calls: { method: string; url: string; body: any }[] = []
+    const orig = globalThis.fetch
+    globalThis.fetch = (async (url: string, init: any) => {
+      const method = init?.method ?? 'GET'
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body
+      calls.push({ method, url: String(url), body })
+      const json = async () =>
+        method === 'GET' && String(url).includes('/agents/')
+          ? { conversation_config: { agent: { prompt: { knowledge_base: agentKb } } } }
+          : { id: 'kb_new', phone_number_id: 'pn_new' }
+      return { ok: true, status: 200, json, text: async () => '' }
+    }) as unknown as typeof fetch
+    return { calls, restore: () => { globalThis.fetch = orig } }
+  }
+
+  it('routes createKnowledgeDoc to the url/text endpoints with name', async () => {
+    const s = stubFetch()
+    try {
+      const r = await engine.createKnowledgeDoc({ name: 'Docs', url: 'https://x.com' })
+      expect(r).toEqual({ knowledgeId: 'kb_new' })
+      await engine.createKnowledgeDoc({ name: 'FAQ', text: 'hello' })
+    } finally {
+      s.restore()
+    }
+    expect(s.calls[0]).toMatchObject({
+      url: expect.stringContaining('/knowledge-base/url'),
+      body: { url: 'https://x.com', name: 'Docs' },
+    })
+    expect(s.calls[1]).toMatchObject({
+      url: expect.stringContaining('/knowledge-base/text'),
+      body: { text: 'hello', name: 'FAQ' },
+    })
+  })
+
+  it('attachKnowledge appends without duplicating; detach removes', async () => {
+    const s = stubFetch([{ type: 'url', id: 'kb_old', name: 'Old' }])
+    try {
+      await engine.attachKnowledge('agent_1', { knowledgeId: 'kb_new', name: 'New', type: 'text' })
+    } finally {
+      s.restore()
+    }
+    expect(s.calls.find((c) => c.method === 'PATCH')!.body.conversation_config.agent.prompt.knowledge_base).toEqual([
+      { type: 'url', id: 'kb_old', name: 'Old' },
+      { type: 'text', id: 'kb_new', name: 'New' },
+    ])
+
+    // Already attached → no PATCH.
+    const s2 = stubFetch([{ type: 'text', id: 'kb_new', name: 'New' }])
+    try {
+      await engine.attachKnowledge('agent_1', { knowledgeId: 'kb_new', name: 'New', type: 'text' })
+    } finally {
+      s2.restore()
+    }
+    expect(s2.calls.some((c) => c.method === 'PATCH')).toBe(false)
+
+    const s3 = stubFetch([
+      { type: 'url', id: 'kb_old', name: 'Old' },
+      { type: 'text', id: 'kb_new', name: 'New' },
+    ])
+    try {
+      await engine.detachKnowledge('agent_1', 'kb_old')
+    } finally {
+      s3.restore()
+    }
+    expect(s3.calls.find((c) => c.method === 'PATCH')!.body.conversation_config.agent.prompt.knowledge_base).toEqual([
+      { type: 'text', id: 'kb_new', name: 'New' },
+    ])
+  })
+
+  it('importSipNumber builds the nested inbound/outbound trunk config', async () => {
+    const s = stubFetch()
+    try {
+      const r = await engine.importSipNumber({
+        e164: '+15551234567',
+        label: 'HQ trunk',
+        address: 'sip.example.com',
+        transport: 'tls',
+        username: 'u',
+        password: 'p',
+        allowedAddresses: ['10.0.0.0/24'],
+      })
+      expect(r).toEqual({ providerNumberId: 'pn_new' })
+    } finally {
+      s.restore()
+    }
+    expect(s.calls[0]).toMatchObject({
+      url: expect.stringContaining('/phone-numbers'),
+      body: {
+        provider: 'sip_trunk',
+        phone_number: '+15551234567',
+        label: 'HQ trunk',
+        outbound_trunk_config: {
+          address: 'sip.example.com',
+          transport: 'tls',
+          credentials: { username: 'u', password: 'p' },
+        },
+        inbound_trunk_config: {
+          allowed_addresses: ['10.0.0.0/24'],
+          credentials: { username: 'u', password: 'p' },
+        },
+      },
+    })
+  })
+})

@@ -166,6 +166,19 @@ export const UploadIcon = (p: IconProps) => (
   </Icon>
 )
 
+export const BookIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H6a2 2 0 0 0-2 2V5.5z" />
+    <path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5a2 2 0 0 1 2 2V5.5z" />
+  </Icon>
+)
+
+export const HashIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M9 3 7.5 21M16.5 3 15 21M4 8.5h16M3.5 15.5h16" />
+  </Icon>
+)
+
 /** Brand mark: an iris tile holding a small static waveform ("the line"). */
 export function Logo({ className }: { className?: string }) {
   return (

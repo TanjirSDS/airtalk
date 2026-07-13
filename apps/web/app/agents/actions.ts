@@ -401,29 +401,9 @@ export async function dismissSuggestionAction(agentId: string, suggestionId: str
   revalidatePath(`/agents/${agentId}/learning`)
 }
 
-export async function addKnowledgeAction(agentId: string, formData: FormData) {
-  const db = await userClient()
-  const org = await requireOrg()
-  if (!org.plan.kbEnabled) throw new Error('Knowledge base requires the Growth plan or higher')
-  const agent = await getAgentRow(db, agentId)
-  const url = (formData.get('url') as string | null)?.trim()
-  const file = formData.get('file') as File | null
-  if (url) {
-    await makeEngine().addKnowledge(agent.provider_agent_id, { url })
-  } else if (file && file.size > 0) {
-    await makeEngine().addKnowledge(agent.provider_agent_id, {
-      file: { name: file.name, data: file },
-    })
-  }
-  revalidatePath(`/agents/${agentId}`)
-}
-
-export async function removeKnowledgeAction(agentId: string, knowledgeId: string) {
-  const db = await userClient()
-  const agent = await getAgentRow(db, agentId)
-  await makeEngine().removeKnowledge(agent.provider_agent_id, knowledgeId)
-  revalidatePath(`/agents/${agentId}`)
-}
+// Knowledge base moved to /knowledge in Phase 13: docs are created there and
+// attached per-agent via setKbAttachmentAction (app/knowledge/actions.ts). The
+// builder rail's Knowledge Base section calls that same action.
 
 /**
  * Phase 7: connect Cal.com and turn the booking agent's capture-only flow into

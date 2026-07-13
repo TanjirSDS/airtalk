@@ -699,3 +699,77 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   EL agent and diff the verified paths (esp. the §4-caveated data_collection /
   evaluation shapes); send a post-call webhook with analysis → calls.analysis
   populated + outcome precedence; confirm one version row per multi-section save.
+
+### Phase 13 knowledge base + phone numbers (2026-07-13)
+- 0012: kb_documents (id, org_id, provider_kb_id UNIQUE, name, source_type CHECK
+  IN url/file/text, created_by email, created_at) + kb_documents_org_rw RLS
+  (is_org_member — already ORs is_admin). plans.max_numbers int (starter 1,
+  growth 3, pro 10 — different from max_agents' 1/3/5). phone_numbers.created_at
+  added (the /numbers "Added" column; backfills now()). NO phone_numbers.provider
+  column — provider is DERIVED: twilio_sid present ⇒ twilio, null ⇒ sip. That's
+  also the correct release gate (only a twilio_sid can be released at Twilio).
+- VERIFIED EL paths (2026-07-13, rule 6; cited in elevenlabs.ts):
+  - KB create: POST /v1/convai/knowledge-base/{url|text|file}, each {..., name}
+    → {id, name, folder_path}. file is multipart, field `file` + form field `name`.
+  - KB attach: conversation_config.agent.prompt.knowledge_base[] =
+    {type: url|file|text|folder, id, name, usage_mode?(default 'auto')}. PATCH
+    REPLACES the array, so attach/detach GET the current list then resend it
+    appended/filtered (attachKnowledge is idempotent — dedups by id).
+  - KB delete: DELETE /v1/convai/knowledge-base/{id}?force=true deletes AND
+    auto-detaches from every dependent agent (exactly "delete detaches everywhere").
+  - SIP import: POST /v1/convai/phone-numbers {provider:'sip_trunk', phone_number,
+    label, outbound_trunk_config:{address, transport, credentials?}, inbound_trunk_
+    config?:{allowed_addresses?, credentials?}} → {phone_number_id}. NESTED, not
+    flat (the CreateSIPTrunkPhoneNumberRequestV2 correction). One credential set
+    reused both directions (ponytail: split if per-leg auth is ever needed).
+  - Number delete: DELETE /v1/convai/phone-numbers/{id} (response is "Any type" —
+    don't parse it).
+- Engine: addKnowledge SPLIT into createKnowledgeDoc({name,url|text|file}) →
+  {knowledgeId} + attachKnowledge(agentId, {knowledgeId,name,type}) /
+  detachKnowledge(agentId, knowledgeId). attach takes the descriptor (name+type
+  we already hold in kb_documents) to avoid an extra provider GET — the spec's
+  bare (agentId, knowledgeId) would have forced one. removeKnowledge(knowledgeId)
+  DROPPED its unused providerAgentId. New importSipNumber(cfg: SipNumberConfig)
+  and deleteNumber(providerNumberId). KnowledgeSource.type widened to include
+  'text'. Tests: KB routing, attach dedup/detach, SIP nested payload (13 engine).
+- KB is workspace-level at EL (shared across all orgs) → the multi-tenant fence
+  is kb_documents + RLS; we NEVER enumerate provider docs to a user. "Used by N
+  agents" and per-agent attach state are read from the PROVIDER (listKnowledge per
+  org agent, parallelized) — source of truth, no join-table drift. Agent count is
+  plan-capped small; ponytail note in the page for a kb_attachments cache if it grows.
+- /knowledge (app/knowledge/{page,actions}.ts + components/knowledge-table.tsx):
+  plan-gated on kbEnabled (upsell card mirrors the learning page, "Growth feature").
+  Table (Name, Type, Used by N, Created), "+ Add Knowledge Base" modal (Name +
+  URL/File/Text tabs — Radix Tabs unmounts inactive content so FormData only
+  carries the active source), row menu: Manage attachments (per-agent switches) +
+  Delete (warns it detaches everywhere). createKbDocAction cleans up the provider
+  doc if the kb_documents insert fails (no orphans). setKbAttachmentAction is
+  shared by /knowledge AND the builder rail so both surfaces stay in sync.
+- Builder rail KB section rebuilt (components/agent-kb-section.tsx): lists org
+  kb_documents with a switch = attached-to-this-agent, toggling setKbAttachmentAction
+  (optimistic). Creation now lives on /knowledge (old per-agent URL/file add forms
+  + addKnowledgeAction/removeKnowledgeAction DELETED from agents/actions.ts).
+- /numbers (app/numbers/{page,actions}.ts + components/numbers-table.tsx): table
+  (Number, Assigned agent = inline native <Select> → assignNumberAction attach/
+  detach, Provider badge twilio|sip, Status, Added), "+" dropdown → Buy new number
+  (reuses NumberPicker, now parameterized with searchAction/buyAction/onBought/bare
+  props — signup passes nothing so it's byte-identical) + Connect via SIP trunk
+  (label, e164, address, transport, username/password, allowed IPs). Release confirm:
+  detach → deleteNumber (EL record) → Twilio releaseNumber (SIP skips it) → row
+  status='released'. Buy on /numbers arrives UNASSIGNED (multi-agent orgs assign
+  via the select); signup still buys-and-attaches.
+- Rule 3: numberPurchaseBlocked now caps at plans.max_numbers (was hard-coded 1);
+  hasAgent made OPTIONAL (only `false` blocks — signup passes it, /numbers omits it
+  since it assigns later). Active-number count excludes status='released' so a
+  release frees a slot. LOCKED: NO identity-verification gate (per spec). Signup
+  funnel unchanged; its number counts toward the limit (passes org.plan.maxNumbers).
+- Nav: Knowledge Base + Phone Numbers inserted after Agents (canonical order),
+  new BookIcon + HashIcon (PhoneIcon stays Call History).
+- Acceptance verified OFFLINE (no Supabase/EL env as of Phase 13): typecheck +
+  lint (provider fence intact) + build clean (/knowledge + /numbers routes emit);
+  151 tests, 147 pass / 4 skip live-only (+ new: 3 engine KB/SIP, kb_documents RLS
+  isolation, numberPurchaseBlocked cap). LIVE acceptance still needs the stack:
+  apply 0012; org B can't see org A's KB docs (rls.test kb case); attach/detach
+  from /knowledge ⇄ builder reflects both ways; delete detaches everywhere; buy →
+  assign → release round-trip (Twilio test creds); SIP import creates a working EL
+  number record; per-plan number cap enforced server-side.

@@ -8,7 +8,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Input } from './ui/input'
 import { cn } from '../lib/utils'
 
-export function NumberPicker() {
+type SearchAction = (areaCode: string) => Promise<{ numbers?: AvailableNumber[]; error?: string }>
+type BuyAction = (e164: string) => Promise<{ error?: string } | void>
+
+// Defaults are the signup actions (buy redirects on success). /numbers passes its
+// own buyAction (no redirect) + onBought to close the dialog, and `bare` to drop
+// the Card chrome since the dialog supplies its own header.
+export function NumberPicker({
+  searchAction = searchNumbersAction,
+  buyAction = buyNumberAction,
+  onBought,
+  bare = false,
+}: {
+  searchAction?: SearchAction
+  buyAction?: BuyAction
+  onBought?: (e164: string) => void
+  bare?: boolean
+} = {}) {
   const [areaCode, setAreaCode] = useState('')
   const [numbers, setNumbers] = useState<AvailableNumber[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -19,7 +35,7 @@ export function NumberPicker() {
     e.preventDefault()
     setError(null)
     startTransition(async () => {
-      const res = await searchNumbersAction(areaCode)
+      const res = await searchAction(areaCode)
       if (res.error) setError(res.error)
       else {
         setNumbers(res.numbers ?? [])
@@ -32,22 +48,15 @@ export function NumberPicker() {
     if (!selected) return
     setError(null)
     startTransition(async () => {
-      const res = await buyNumberAction(selected)
-      if (res?.error) setError(res.error) // on success the action redirects
+      const res = await buyAction(selected)
+      if (res?.error) setError(res.error) // signup redirects before reaching here
+      else onBought?.(selected)
     })
   }
 
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Pick your phone number</CardTitle>
-        <CardDescription>
-          This is the number customers call — your agent answers it. Search by area code or leave
-          blank for any US number.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <form onSubmit={search} className="flex gap-2">
+  const body = (
+    <>
+      <form onSubmit={search} className="flex gap-2">
           <Input
             value={areaCode}
             onChange={(e) => setAreaCode(e.target.value)}
@@ -92,7 +101,21 @@ export function NumberPicker() {
             {pending ? 'Setting up…' : selected ? `Claim ${selected}` : 'Select a number'}
           </Button>
         )}
-      </CardContent>
+    </>
+  )
+
+  if (bare) return <div className="space-y-4">{body}</div>
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Pick your phone number</CardTitle>
+        <CardDescription>
+          This is the number customers call — your agent answers it. Search by area code or leave
+          blank for any US number.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">{body}</CardContent>
     </Card>
   )
 }

@@ -9,8 +9,10 @@ import { AccountMenu } from './account-menu'
 import {
   AgentIcon,
   BillingIcon,
+  BookIcon,
   CampaignIcon,
   DashboardIcon,
+  HashIcon,
   MenuIcon,
   PhoneIcon,
   Waveform,
@@ -31,6 +33,8 @@ const SIDEBAR_COOKIE = 'sidebar-collapsed'
 const NAV: { href: string; label: string; Icon: (p: IconProps) => ReactNode }[] = [
   { href: '/dashboard', label: 'Dashboard', Icon: DashboardIcon },
   { href: '/agents', label: 'Agents', Icon: AgentIcon },
+  { href: '/knowledge', label: 'Knowledge Base', Icon: BookIcon },
+  { href: '/numbers', label: 'Phone Numbers', Icon: HashIcon },
   { href: '/calls', label: 'Call History', Icon: PhoneIcon },
   { href: '/campaigns', label: 'Campaigns', Icon: CampaignIcon },
   { href: '/billing', label: 'Billing', Icon: BillingIcon },

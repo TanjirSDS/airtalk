@@ -9,23 +9,28 @@ function fakeFetch(status: number, body: unknown): typeof fetch {
 }
 
 describe('numberPurchaseBlocked (rule 3: money-loop guards)', () => {
-  const ready = { hasSubscription: true, hasAgent: true, existingNumbers: 0 }
+  const ready = { hasSubscription: true, hasAgent: true, existingNumbers: 0, maxNumbers: 3 }
 
-  it('allows exactly the ready state', () => {
+  it('allows while under the plan cap', () => {
     expect(numberPurchaseBlocked(ready)).toBeNull()
+    expect(numberPurchaseBlocked({ ...ready, existingNumbers: 2 })).toBeNull()
   })
 
   it('blocks without a subscription — no pay, no spend', () => {
     expect(numberPurchaseBlocked({ ...ready, hasSubscription: false })).toMatch(/plan/i)
   })
 
-  it('blocks without an agent — a number with nothing answering is waste', () => {
+  it('blocks when hasAgent is explicitly false (signup attaches on buy)', () => {
     expect(numberPurchaseBlocked({ ...ready, hasAgent: false })).toMatch(/agent/i)
   })
 
-  it('caps at one number per org', () => {
-    expect(numberPurchaseBlocked({ ...ready, existingNumbers: 1 })).toMatch(/already/i)
-    expect(numberPurchaseBlocked({ ...ready, existingNumbers: 3 })).toMatch(/already/i)
+  it('allows when hasAgent is omitted (/numbers assigns later)', () => {
+    expect(numberPurchaseBlocked({ hasSubscription: true, existingNumbers: 0, maxNumbers: 1 })).toBeNull()
+  })
+
+  it('caps at plan max_numbers, with correct pluralization', () => {
+    expect(numberPurchaseBlocked({ ...ready, existingNumbers: 3 })).toMatch(/up to 3 phone numbers/i)
+    expect(numberPurchaseBlocked({ ...ready, maxNumbers: 1, existingNumbers: 1 })).toMatch(/up to 1 phone number\b/i)
   })
 })
 

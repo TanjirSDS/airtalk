@@ -80,13 +80,19 @@ export async function releaseNumber(
  */
 export function numberPurchaseBlocked(state: {
   hasSubscription: boolean
-  hasAgent: boolean
+  /** Signup attaches to the agent on buy so it requires one; /numbers assigns
+   *  later, so it omits this. Only `false` blocks — undefined passes. */
+  hasAgent?: boolean
   existingNumbers: number
+  maxNumbers: number
 }): string | null {
   if (!state.hasSubscription) return 'Pick a plan before claiming a number.'
-  if (!state.hasAgent) return 'Create your agent before claiming a number.'
-  // ponytail: one number per org in self-serve — the cap and the kill switch in
-  // one line; multi-number support goes through admin when someone needs it.
-  if (state.existingNumbers >= 1) return 'Your workspace already has a phone number.'
+  if (state.hasAgent === false) return 'Create your agent before claiming a number.'
+  // Per-plan cap (Phase 13, replaces the one-per-org rule). Rule 3: this is the
+  // money guard; the /numbers UI mirrors it but the action is the gate.
+  if (state.existingNumbers >= state.maxNumbers) {
+    const plural = state.maxNumbers === 1 ? '' : 's'
+    return `Your plan allows up to ${state.maxNumbers} phone number${plural}. Upgrade for more.`
+  }
   return null
 }

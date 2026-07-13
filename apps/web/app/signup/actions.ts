@@ -115,6 +115,7 @@ export async function buyNumberAction(e164: string): Promise<{ error?: string }>
     hasSubscription: !!orgRow?.stripe_subscription_id,
     hasAgent: !!agent,
     existingNumbers: numberCount ?? 0,
+    maxNumbers: org.plan.maxNumbers,
   })
   if (blocked) return { error: blocked }
 
