@@ -6,6 +6,7 @@ import type {
   CallEvent,
   KnowledgeSource,
   ProviderCall,
+  SipNumberConfig,
   Voice,
   VoiceEngine,
   WebhookRequest,
@@ -163,6 +164,41 @@ export class ElevenLabsEngine implements VoiceEngine {
     return { providerNumberId: res.phone_number_id as string }
   }
 
+  // SIP-trunk import. Nested inbound/outbound trunk config per
+  // CreateSIPTrunkPhoneNumberRequestV2 (verified against docs 2026-07-13). One
+  // credential set is reused both directions; split if members ever need per-leg auth.
+  async importSipNumber(cfg: SipNumberConfig) {
+    const credentials = cfg.username
+      ? { username: cfg.username, password: cfg.password ?? null }
+      : undefined
+    const inbound =
+      cfg.allowedAddresses?.length || credentials
+        ? {
+            inbound_trunk_config: {
+              ...(cfg.allowedAddresses?.length && { allowed_addresses: cfg.allowedAddresses }),
+              ...(credentials && { credentials }),
+            },
+          }
+        : {}
+    const res = await this.req('POST', '/v1/convai/phone-numbers', {
+      provider: 'sip_trunk',
+      phone_number: cfg.e164,
+      label: cfg.label,
+      outbound_trunk_config: {
+        address: cfg.address,
+        transport: cfg.transport ?? 'auto',
+        ...(credentials && { credentials }),
+      },
+      ...inbound,
+    })
+    return { providerNumberId: res.phone_number_id as string }
+  }
+
+  // DELETE response body is undefined in the OpenAPI ("Any type") — don't parse it.
+  async deleteNumber(providerNumberId: string) {
+    await this.req('DELETE', `/v1/convai/phone-numbers/${providerNumberId}`)
+  }
+
   async attachNumber(providerNumberId: string, providerAgentId: string) {
     await this.req('PATCH', `/v1/convai/phone-numbers/${providerNumberId}`, {
       agent_id: providerAgentId,
@@ -211,13 +247,23 @@ export class ElevenLabsEngine implements VoiceEngine {
     return { batchId: res.id as string }
   }
 
-  async addKnowledge(providerAgentId: string, source: { url?: string; file?: { name: string; data: Blob } }) {
+  // Create a workspace KB doc. url/text return JSON directly; file is multipart.
+  // Endpoints + {id,name,folder_path} response verified against docs 2026-07-13.
+  async createKnowledgeDoc(source: {
+    name: string
+    url?: string
+    text?: string
+    file?: { name: string; data: Blob }
+  }): Promise<{ knowledgeId: string }> {
     let doc: any
     if (source.url) {
-      doc = await this.req('POST', '/v1/convai/knowledge-base/url', { url: source.url })
+      doc = await this.req('POST', '/v1/convai/knowledge-base/url', { url: source.url, name: source.name })
+    } else if (source.text) {
+      doc = await this.req('POST', '/v1/convai/knowledge-base/text', { text: source.text, name: source.name })
     } else if (source.file) {
       const form = new FormData()
       form.append('file', source.file.data, source.file.name)
+      form.append('name', source.name)
       const res = await fetch(`${BASE}/v1/convai/knowledge-base/file`, {
         method: 'POST',
         headers: { 'xi-api-key': this.opts.apiKey },
@@ -226,38 +272,53 @@ export class ElevenLabsEngine implements VoiceEngine {
       if (!res.ok) throw new Error(`ElevenLabs KB file upload → ${res.status}: ${await res.text()}`)
       doc = await res.json()
     } else {
-      throw new Error('addKnowledge needs url or file')
+      throw new Error('createKnowledgeDoc needs url, text, or file')
     }
-
-    // Attach to prompt.knowledge_base — entry shape {type,id,name} verified against
-    // KnowledgeBaseLocator docs 2026-07-12 (usage_mode optional, defaults 'auto').
-    const agent = await this.req('GET', `/v1/convai/agents/${providerAgentId}`)
-    const existing = agent.conversation_config?.agent?.prompt?.knowledge_base ?? []
-    await this.req('PATCH', `/v1/convai/agents/${providerAgentId}`, {
-      conversation_config: {
-        agent: {
-          prompt: {
-            knowledge_base: [
-              ...existing,
-              { type: source.url ? 'url' : 'file', id: doc.id, name: source.url ?? source.file!.name },
-            ],
-          },
-        },
-      },
-    })
     return { knowledgeId: doc.id as string }
   }
 
-  async listKnowledge(providerAgentId: string): Promise<KnowledgeSource[]> {
+  // Attach shape {type,id,name} on conversation_config.agent.prompt.knowledge_base —
+  // KnowledgeBaseLocator verified 2026-07-13 (usage_mode defaults 'auto'). The PATCH
+  // replaces the whole array, so we GET the current list and resend it appended/filtered.
+  async attachKnowledge(
+    providerAgentId: string,
+    doc: { knowledgeId: string; name: string; type: KnowledgeSource['type'] }
+  ) {
+    const existing = await this.knowledgeBaseOf(providerAgentId)
+    if (existing.some((e) => e.id === doc.knowledgeId)) return
+    await this.patchKnowledgeBase(providerAgentId, [
+      ...existing,
+      { type: doc.type, id: doc.knowledgeId, name: doc.name },
+    ])
+  }
+
+  async detachKnowledge(providerAgentId: string, knowledgeId: string) {
+    const existing = await this.knowledgeBaseOf(providerAgentId)
+    await this.patchKnowledgeBase(
+      providerAgentId,
+      existing.filter((e) => e.id !== knowledgeId)
+    )
+  }
+
+  private async knowledgeBaseOf(providerAgentId: string): Promise<any[]> {
     const agent = await this.req('GET', `/v1/convai/agents/${providerAgentId}`)
-    const entries: any[] = agent.conversation_config?.agent?.prompt?.knowledge_base ?? []
+    return agent.conversation_config?.agent?.prompt?.knowledge_base ?? []
+  }
+
+  private async patchKnowledgeBase(providerAgentId: string, knowledge_base: any[]) {
+    await this.req('PATCH', `/v1/convai/agents/${providerAgentId}`, {
+      conversation_config: { agent: { prompt: { knowledge_base } } },
+    })
+  }
+
+  async listKnowledge(providerAgentId: string): Promise<KnowledgeSource[]> {
+    const entries = await this.knowledgeBaseOf(providerAgentId)
     return entries.map((e) => ({ knowledgeId: e.id, name: e.name, type: e.type }))
   }
 
-  // ponytail: force=true deletes the doc even if other agents reference it and
-  // auto-detaches it everywhere — fine while docs are uploaded per-agent; switch
-  // to detach-then-delete if docs ever get shared across agents.
-  async removeKnowledge(_providerAgentId: string, knowledgeId: string) {
+  // ponytail: force=true deletes the doc AND auto-detaches it from every agent
+  // (verified Phase 2) — exactly what "delete detaches everywhere" needs.
+  async removeKnowledge(knowledgeId: string) {
     await this.req('DELETE', `/v1/convai/knowledge-base/${knowledgeId}?force=true`)
   }
 

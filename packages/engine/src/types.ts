@@ -81,7 +81,22 @@ export interface Voice {
 export interface KnowledgeSource {
   knowledgeId: string
   name: string
-  type: 'url' | 'file'
+  type: 'url' | 'file' | 'text'
+}
+
+/** A SIP-trunk phone number to register at the provider (Phase 13). Provider-neutral;
+ *  the adapter maps it onto the provider's inbound/outbound trunk config. */
+export interface SipNumberConfig {
+  e164: string
+  label: string
+  /** SIP server host/IP the provider sends outbound INVITEs to. */
+  address: string
+  transport?: 'auto' | 'udp' | 'tcp' | 'tls'
+  /** Digest-auth credentials for the trunk (used both directions). */
+  username?: string
+  password?: string
+  /** IPs/CIDRs allowed to send us inbound calls; empty = credentials-only auth. */
+  allowedAddresses?: string[]
 }
 
 /** One call as the provider reports it — reconciliation's source of truth (rule 5). */
@@ -123,6 +138,10 @@ export interface VoiceEngine {
   updateAgent(providerAgentId: string, cfg: Partial<AgentConfig>): Promise<void>
   deleteAgent(providerAgentId: string): Promise<void>
   importNumber(twilioSid: string, e164: string): Promise<{ providerNumberId: string }>
+  /** Register a SIP-trunk number (no Twilio account) and return its provider id. */
+  importSipNumber(cfg: SipNumberConfig): Promise<{ providerNumberId: string }>
+  /** Delete the provider's phone-number record entirely (release flow). */
+  deleteNumber(providerNumberId: string): Promise<void>
   attachNumber(providerNumberId: string, providerAgentId: string): Promise<void>
   /** Unassign the agent so the number stops answering (cap enforcement). */
   detachNumber(providerNumberId: string): Promise<void>
@@ -135,12 +154,27 @@ export interface VoiceEngine {
     providerAgentId: string,
     contacts: { e164: string; vars?: Record<string, string> }[]
   ): Promise<{ batchId: string }>
-  addKnowledge(
+  /**
+   * Create a workspace knowledge-base document from a url/text/file. Provider KB is
+   * workspace-level (shared across every org), so callers MUST record the returned
+   * id in the org-scoped kb_documents table and never list provider docs directly.
+   */
+  createKnowledgeDoc(source: {
+    name: string
+    url?: string
+    text?: string
+    file?: { name: string; data: Blob }
+  }): Promise<{ knowledgeId: string }>
+  /** Attach an existing KB doc to one agent (idempotent). */
+  attachKnowledge(
     providerAgentId: string,
-    source: { url?: string; file?: { name: string; data: Blob } }
-  ): Promise<{ knowledgeId: string }>
+    doc: { knowledgeId: string; name: string; type: KnowledgeSource['type'] }
+  ): Promise<void>
+  /** Detach a KB doc from one agent (leaves the doc in the workspace). */
+  detachKnowledge(providerAgentId: string, knowledgeId: string): Promise<void>
   listKnowledge(providerAgentId: string): Promise<KnowledgeSource[]>
-  removeKnowledge(providerAgentId: string, knowledgeId: string): Promise<void>
+  /** Delete the doc AND auto-detach it from every agent (DELETE ?force=true). */
+  removeKnowledge(knowledgeId: string): Promise<void>
   listVoices(): Promise<Voice[]>
   /**
    * Descriptor for the provider's in-browser test-call widget: the UI injects

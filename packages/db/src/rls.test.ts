@@ -45,6 +45,12 @@ describe.skipIf(!live)('RLS org isolation (live)', () => {
     await admin
       .from('agents')
       .insert({ org_id: org.id, name: `${stamp}-agent-${tag}`, provider: 'elevenlabs' })
+    await admin.from('kb_documents').insert({
+      org_id: org.id,
+      provider_kb_id: `${stamp}-kb-${tag}`,
+      name: `${stamp}-kb-${tag}`,
+      source_type: 'text',
+    })
 
     const client = createClient(URL!, ANON_KEY!, { auth: { persistSession: false } })
     const { error: sErr } = await client.auth.signInWithPassword({ email, password })
@@ -71,6 +77,29 @@ describe.skipIf(!live)('RLS org isolation (live)', () => {
     expect(aAgents!.some((r) => r.name === `${stamp}-agent-a`)).toBe(true)
     expect(aAgents!.some((r) => r.name === `${stamp}-agent-b`)).toBe(false)
     expect(bAgents!.some((r) => r.name === `${stamp}-agent-a`)).toBe(false)
+  }, 30_000)
+
+  it('kb_documents are org-isolated (read + write)', async () => {
+    const { data: aDocs } = await clientA.from('kb_documents').select('name, org_id')
+    const { data: bDocs } = await clientB.from('kb_documents').select('name, org_id')
+    expect(aDocs!.every((r) => r.org_id === orgs[0])).toBe(true)
+    expect(aDocs!.some((r) => r.name === `${stamp}-kb-a`)).toBe(true)
+    expect(aDocs!.some((r) => r.name === `${stamp}-kb-b`)).toBe(false)
+    expect(bDocs!.some((r) => r.name === `${stamp}-kb-a`)).toBe(false)
+
+    // A member cannot register a doc into another org (with-check rejects).
+    const { error } = await clientA.from('kb_documents').insert({
+      org_id: orgs[1],
+      provider_kb_id: `${stamp}-kb-intruder`,
+      name: `${stamp}-kb-intruder`,
+      source_type: 'text',
+    })
+    expect(error).toBeTruthy()
+    const { data } = await admin
+      .from('kb_documents')
+      .select('id')
+      .eq('provider_kb_id', `${stamp}-kb-intruder`)
+    expect(data).toHaveLength(0)
   }, 30_000)
 
   it('cannot write into another org', async () => {

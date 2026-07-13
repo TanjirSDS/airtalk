@@ -1,17 +1,13 @@
-import type { KnowledgeSource } from '@airtalk/engine'
 import { normalizeStoredConfigSafe } from '@airtalk/engine/templates'
 import { notFound } from 'next/navigation'
 import { AgentBuilder, type BuilderConfig } from '../../../components/agent-builder'
 import { CalcomConnectForm } from '../../../components/calcom-connect-form'
+import { AgentKbSection, type AgentKbDoc } from '../../../components/agent-kb-section'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../../../components/ui/accordion'
-import { Badge } from '../../../components/ui/badge'
-import { Button } from '../../../components/ui/button'
-import { Input } from '../../../components/ui/input'
 import { includedRateCentsPerMin, OVERAGE_CENTS_PER_MIN } from '../../../lib/billing-math'
 import { makeEngine } from '../../../lib/engine'
 import { activeOrg } from '../../../lib/org'
 import { userClient } from '../../../lib/supabase-server'
-import { addKnowledgeAction, removeKnowledgeAction } from '../actions'
 import type { VersionRow } from '../../../components/versions-sheet'
 
 export const dynamic = 'force-dynamic'
@@ -58,15 +54,25 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const { data: orgRow } = await db.from('orgs').select('calcom_api_key, calcom_event_type_id').maybeSingle()
   const calcomConnected = !!orgRow?.calcom_api_key && !!orgRow?.calcom_event_type_id
 
-  // Knowledge base → the rail's Knowledge Base section.
-  let knowledge: KnowledgeSource[] = []
-  let knowledgeError: string | null = null
-  if (kbEnabled && agent.provider_agent_id) {
-    try {
-      knowledge = await engine.listKnowledge(agent.provider_agent_id)
-    } catch (e) {
-      knowledgeError = e instanceof Error ? e.message : String(e)
-    }
+  // Knowledge base → the rail's Knowledge Base section. Docs are org-scoped
+  // (kb_documents); attachment state comes from the provider (source of truth).
+  let kbDocs: AgentKbDoc[] = []
+  if (kbEnabled) {
+    const [{ data: docRows }, attached] = await Promise.all([
+      db.from('kb_documents').select('id, name, source_type, provider_kb_id').order('created_at', { ascending: false }),
+      agent.provider_agent_id
+        ? engine
+            .listKnowledge(agent.provider_agent_id)
+            .then((ks) => new Set(ks.map((k) => k.knowledgeId)))
+            .catch(() => new Set<string>())
+        : Promise.resolve(new Set<string>()),
+    ])
+    kbDocs = (docRows ?? []).map((d) => ({
+      id: d.id,
+      name: d.name,
+      sourceType: d.source_type,
+      attached: attached.has(d.provider_kb_id),
+    }))
   }
 
   const showFunctions = stored.template === 'booking'
@@ -94,36 +100,8 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         {kbEnabled && (
           <AccordionItem value="kb">
             <AccordionTrigger>Knowledge Base</AccordionTrigger>
-            <AccordionContent className="space-y-3">
-              {knowledgeError && <p className="text-sm text-destructive">{knowledgeError}</p>}
-              <ul className="space-y-2">
-                {knowledge.map((k) => (
-                  <li key={k.knowledgeId} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-                    <Badge variant="outline">{k.type}</Badge>
-                    <span className="flex-1 truncate">{k.name}</span>
-                    <form action={removeKnowledgeAction.bind(null, id, k.knowledgeId)}>
-                      <Button type="submit" variant="ghost" size="sm">
-                        ✕
-                      </Button>
-                    </form>
-                  </li>
-                ))}
-                {knowledge.length === 0 && !knowledgeError && (
-                  <li className="text-sm text-muted-foreground">No sources attached yet.</li>
-                )}
-              </ul>
-              <form action={addKnowledgeAction.bind(null, id)} className="flex gap-2">
-                <Input name="url" type="url" placeholder="https://your-site.com/faq" required />
-                <Button type="submit" variant="outline">
-                  Add
-                </Button>
-              </form>
-              <form action={addKnowledgeAction.bind(null, id)} className="flex gap-2">
-                <Input name="file" type="file" required />
-                <Button type="submit" variant="outline">
-                  Upload
-                </Button>
-              </form>
+            <AccordionContent>
+              <AgentKbSection agentId={id} docs={kbDocs} />
             </AccordionContent>
           </AccordionItem>
         )}
