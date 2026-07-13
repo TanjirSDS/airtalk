@@ -2,6 +2,8 @@
 // One cheap LLM call per finished call, best-effort: any failure → null, the
 // call row just keeps outcome/summary null.
 
+import type { CallAnalysis } from '@airtalk/engine'
+
 export const OUTCOMES = [
   'booked',
   'lead_captured',
@@ -70,6 +72,32 @@ export function parseOutcome(content: string): CallOutcome | null {
   } catch {
     /* model returned non-JSON — treat as no classification */
   }
+  return null
+}
+
+/**
+ * Phase 12 outcome precedence — where ElevenLabs-native analysis meets our
+ * gpt-4o-mini classifier. The classifier still owns the rich label, the summary,
+ * and opt_out detection (none of which EL's analysis provides). EL's success
+ * verdict is *preferred* only where it is decisive:
+ *  - opt_out from the classifier is sacred (Phase 7 compliance) — it wins over EL.
+ *  - Otherwise an EL 'failure' verdict overrides an optimistic classifier label
+ *    → 'failed'. ('success'/'unknown' has no 1:1 map to our enum — booked vs
+ *    question vs lead — so we keep the classifier's finer label.)
+ *  - With analysis but no classifier (no OPENAI_API_KEY): an EL 'failure' still
+ *    sets 'failed'; a 'success'/'unknown' yields nothing (stays unclassified).
+ *  - No analysis at all → the classifier is the sole source (unchanged Phase 3).
+ */
+export function deriveOutcome(
+  classified: CallOutcome | null,
+  analysis: CallAnalysis | null | undefined
+): CallOutcome | null {
+  if (classified) {
+    if (classified.outcome === 'opt_out') return classified
+    if (analysis?.success === false) return { outcome: 'failed', summary: classified.summary }
+    return classified
+  }
+  if (analysis?.success === false) return { outcome: 'failed', summary: '' }
   return null
 }
 

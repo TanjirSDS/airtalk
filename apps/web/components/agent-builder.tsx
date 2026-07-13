@@ -5,14 +5,15 @@
 // edit state; the server page keys this by current version so a rollback/save
 // remounts it with fresh data.
 import type { Voice } from '@airtalk/engine'
-import { DEFAULT_LLM, MODEL_INFO, modelLabel } from '@airtalk/engine/templates'
+import { CALL_DEFAULTS, DEFAULT_ANALYSIS, DEFAULT_LLM, MODEL_INFO, modelLabel, SPEECH_DEFAULTS } from '@airtalk/engine/templates'
 import Link from 'next/link'
-import { useEffect, useRef, useState, useTransition, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { updateAgentAction } from '../app/agents/actions'
 import { AgentHandbookDialog } from './agent-handbook-dialog'
 import { CustomLlmForm } from './custom-llm-form'
 import { ChevronRightIcon, CopyIcon } from './icons'
+import { SettingsRail, type AgentSettings } from './settings-rail'
 import { ShareDialog } from './share-dialog'
 import { TestPanel } from './test-panel'
 import { VersionsSheet, type VersionRow } from './versions-sheet'
@@ -49,6 +50,31 @@ export interface BuilderConfig {
   llm?: string
   language?: string
   customLlm?: { url: string; modelId?: string; apiKeySecretId?: string }
+  // Phase 12 settings (see settings-rail.tsx).
+  speech?: { stability?: number; similarityBoost?: number; speed?: number }
+  transcription?: { keywords?: string[] }
+  call?: { maxDurationSecs?: number; endOnSilenceSecs?: number }
+  analysis?: AgentSettings['analysis']
+  widget?: { public?: boolean }
+}
+
+/** Fill the settings accordion from stored config, defaulting anything unset —
+ *  so existing (pre-Phase-12) agents show sane values and persist them on save. */
+function initSettings(config: BuilderConfig): AgentSettings {
+  return {
+    speech: {
+      stability: config.speech?.stability ?? SPEECH_DEFAULTS.stability,
+      similarityBoost: config.speech?.similarityBoost ?? SPEECH_DEFAULTS.similarityBoost,
+      speed: config.speech?.speed ?? SPEECH_DEFAULTS.speed,
+    },
+    keywords: config.transcription?.keywords ?? [],
+    call: {
+      maxDurationSecs: config.call?.maxDurationSecs ?? CALL_DEFAULTS.maxDurationSecs,
+      endOnSilenceSecs: config.call?.endOnSilenceSecs ?? CALL_DEFAULTS.endOnSilenceSecs,
+    },
+    analysis: structuredClone(config.analysis ?? DEFAULT_ANALYSIS),
+    widgetPublic: config.widget?.public ?? true,
+  }
 }
 
 export function AgentBuilder({
@@ -85,19 +111,25 @@ export function AgentBuilder({
   const [language, setLanguage] = useState(config.language || 'en')
   const [welcome, setWelcome] = useState<WelcomeMode>(config.firstMessage.trim() ? 'static' : 'user_first')
   const [firstMessage, setFirstMessage] = useState(config.firstMessage)
+  const initialSettings = useMemo(() => initSettings(config), [config])
+  const [settings, setSettings] = useState<AgentSettings>(initialSettings)
   const [pending, startTransition] = useTransition()
 
   const effectiveFirstMessage = welcome === 'static' ? firstMessage : ''
+  const settingsDirty = JSON.stringify(settings) !== JSON.stringify(initialSettings)
   const dirty =
     name !== config.name ||
     prompt !== config.systemPrompt ||
     voiceId !== config.voiceId ||
     llm !== (config.llm || DEFAULT_LLM) ||
     language !== (config.language || 'en') ||
-    effectiveFirstMessage !== config.firstMessage
+    effectiveFirstMessage !== config.firstMessage ||
+    settingsDirty
 
   function save() {
     startTransition(async () => {
+      // Phase 12: the whole accordion rides this ONE save — one updateAgent + one
+      // version row (rule 4), never per-section saves.
       const res = await updateAgentAction(agentId, {
         name,
         systemPrompt: prompt,
@@ -105,6 +137,11 @@ export function AgentBuilder({
         voiceId,
         llm,
         language,
+        speech: settings.speech,
+        transcription: { keywords: settings.keywords },
+        call: settings.call,
+        analysis: settings.analysis,
+        widget: { public: settings.widgetPublic },
       })
       if (res.error) toast.error(res.error)
       else toast.success(`Saved as version ${res.version}`)
@@ -227,6 +264,7 @@ export function AgentBuilder({
             </div>
           )}
           {rail}
+          <SettingsRail settings={settings} onChange={setSettings} />
         </aside>
       </div>
     </div>

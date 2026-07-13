@@ -26,7 +26,7 @@ import { inngest } from './inngest'
 import { extractSuggestions, type CallForLearning } from './learning'
 import { normalizeStoredConfigSafe } from './types'
 import { externalNumber, recordOptOut } from './opt-out'
-import { classifyCall } from './outcome'
+import { classifyCall, deriveOutcome } from './outcome'
 import { reconcileYesterday } from './reconcile'
 import { stripeClient } from './stripe'
 
@@ -50,22 +50,25 @@ const classifyRecordedCall = inngest.createFunction(
     const db = serviceClient()
     const { data: call } = await db
       .from('calls')
-      .select('id, org_id, direction, from_e164, to_e164, transcript, outcome')
+      .select('id, org_id, direction, from_e164, to_e164, transcript, outcome, analysis')
       .eq('provider_call_id', providerCallId)
       .maybeSingle()
     if (!call) return 'call row gone'
     if (call.outcome) return 'already classified'
+    // Phase 12: classify for the rich label (when a key exists), then let EL's
+    // native analysis take precedence where decisive (deriveOutcome). EL analysis
+    // alone can still set outcome='failed' with no key.
     const key = getEnv().OPENAI_API_KEY
-    if (!key) return 'no OPENAI_API_KEY — skipped'
-    const result = await classifyCall(call.transcript, key)
-    if (!result) return 'classifier returned nothing'
-    await db.from('calls').update({ outcome: result.outcome, summary: result.summary }).eq('id', call.id)
+    const result = key ? await classifyCall(call.transcript, key) : null
+    const derived = deriveOutcome(result, call.analysis)
+    if (!derived) return key ? 'classifier returned nothing' : 'no analysis, no OPENAI_API_KEY — skipped'
+    await db.from('calls').update({ outcome: derived.outcome, summary: derived.summary }).eq('id', call.id)
     // Phase 7: "remove me" → permanent do-not-call entry + scrub pending contacts.
-    if (result.outcome === 'opt_out' && call.org_id) {
+    if (derived.outcome === 'opt_out' && call.org_id) {
       const e164 = externalNumber(call)
       if (e164) await recordOptOut(db, call.org_id, e164)
     }
-    return result.outcome
+    return derived.outcome
   }
 )
 

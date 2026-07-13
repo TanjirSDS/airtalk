@@ -1,6 +1,21 @@
 // The provider-agnostic contract. Nothing outside packages/engine may import
 // provider SDKs or know provider payload shapes — only these types.
 
+/** Post-call analysis config (Phase 12). Provider-neutral; the adapter maps these
+ *  onto the provider's data-collection + success-evaluation settings. */
+export interface DataCollectionField {
+  /** Human name; the adapter slugifies it into the provider identifier/key. */
+  name: string
+  type: 'string' | 'number' | 'boolean'
+  /** Doubles as the extraction instruction the provider's analyzer follows. */
+  description: string
+}
+export interface SuccessCriterion {
+  name: string
+  /** The goal prompt the provider evaluates the call against (success/failure). */
+  prompt: string
+}
+
 export interface AgentConfig {
   name: string
   systemPrompt: string
@@ -16,6 +31,28 @@ export interface AgentConfig {
    * key is NEVER stored here — only the id of a provider-side workspace secret.
    */
   customLlm?: { url: string; modelId?: string; apiKeySecretId?: string }
+  // --- Phase 12 settings (all optional; the adapter drops any the provider lacks). ---
+  /** TTS voice tuning. Ranges 0–1 for stability/similarity; speed ~0.7–1.2, 1 = normal. */
+  speech?: { stability?: number; similarityBoost?: number; speed?: number }
+  /** Realtime ASR tuning. `keywords` bias the transcriber toward domain words. */
+  transcription?: { keywords?: string[] }
+  /** Call limits. `endOnSilenceSecs` hangs up after that many seconds of silence. */
+  call?: { maxDurationSecs?: number; endOnSilenceSecs?: number }
+  /** Post-call analysis the provider runs: structured data + success criteria (cap 30 each). */
+  analysis?: { dataCollection: DataCollectionField[]; successCriteria: SuccessCriterion[] }
+  /** `public: false` requires signed auth to talk to the agent (widget/share stop working). */
+  widget?: { public?: boolean }
+}
+
+/** Provider-neutral post-call analysis (Phase 12), stored as calls.analysis.
+ *  `success` is the provider's own success verdict (true/false; undefined = unknown).
+ *  `data` is the extracted structured fields keyed by identifier. `sentiment` is
+ *  optional — ElevenLabs does not emit it natively, so it stays undefined there. */
+export interface CallAnalysis {
+  success?: boolean
+  criteria?: { name: string; result: string; rationale?: string }[]
+  data?: Record<string, unknown>
+  sentiment?: string
 }
 
 export interface CallEvent {
@@ -30,6 +67,8 @@ export interface CallEvent {
   status: string
   /** Optional: rule 5 says billing truth comes from reconciliation, not webhooks. */
   costCents?: number
+  /** Provider-native post-call analysis, when the payload carried one (Phase 12). */
+  analysis?: CallAnalysis
 }
 
 export interface Voice {

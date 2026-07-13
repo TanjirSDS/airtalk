@@ -29,6 +29,7 @@ export {
 } from './merge'
 export { getSection, hasSection, removeSection, setSection } from './managed'
 export { DEFAULT_LLM, MODEL_INFO, modelLabel, type ModelInfo } from './model-info'
+export { CALL_DEFAULTS, DEFAULT_ANALYSIS, SPEECH_DEFAULTS } from './settings-defaults'
 export {
   HANDBOOK_HEADING,
   HANDBOOK_PRESETS,

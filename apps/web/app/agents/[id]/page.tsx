@@ -138,6 +138,12 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     llm: stored.agentConfig.llm,
     language: stored.agentConfig.language,
     customLlm: stored.agentConfig.customLlm,
+    // Phase 12 settings accordion.
+    speech: stored.agentConfig.speech,
+    transcription: stored.agentConfig.transcription,
+    call: stored.agentConfig.call,
+    analysis: stored.agentConfig.analysis,
+    widget: stored.agentConfig.widget,
   }
 
   const versionRows: VersionRow[] = (versions ?? []).map((v) => ({

@@ -6,6 +6,7 @@ import type { AgentConfig } from '@airtalk/engine'
 import {
   applySuggestionToPrompt,
   buildAgentConfig,
+  DEFAULT_ANALYSIS,
   ensureDisclosureAndConduct,
   normalizeStoredConfig,
   type AgentType,
@@ -91,23 +92,32 @@ async function createStoredAgent(
     throw new Error(`Your ${org.plan.name} plan allows ${org.plan.maxAgents} agent(s)`)
   }
 
-  const { providerAgentId } = await makeEngine().createAgent(stored.agentConfig)
+  // Phase 12: seed Retell-parity post-call analysis + an explicit public widget on
+  // NEW agents (existing agents pick these up on next save — never a mass-PATCH).
+  const agentConfig: AgentConfig = {
+    ...stored.agentConfig,
+    analysis: stored.agentConfig.analysis ?? DEFAULT_ANALYSIS,
+    widget: stored.agentConfig.widget ?? { public: true },
+  }
+  const seeded: StoredAgentConfig = { ...stored, agentConfig }
+
+  const { providerAgentId } = await makeEngine().createAgent(agentConfig)
   const { data, error } = await db
     .from('agents')
     .insert({
       org_id: org.orgId,
-      name: stored.agentConfig.name,
+      name: agentConfig.name,
       provider: 'elevenlabs',
       provider_agent_id: providerAgentId,
-      config: stored,
-      agent_type: stored.agentType,
+      config: seeded,
+      agent_type: seeded.agentType,
       updated_by: email,
       updated_at: new Date().toISOString(),
     })
     .select('id')
     .single()
   if (error) throw new Error(error.message)
-  await insertVersion(db, data.id, stored)
+  await insertVersion(db, data.id, seeded)
   return data.id
 }
 
@@ -144,7 +154,9 @@ export async function createAgentAction(input: {
 }
 
 /** Freeform-first edit (Phase 10/11): the prompt text is the source of truth.
- *  firstMessage '' ⇒ user speaks first. llm/language are concrete (picker-driven). */
+ *  firstMessage '' ⇒ user speaks first. llm/language are concrete (picker-driven).
+ *  Phase 12: the whole settings accordion (speech/transcription/call/analysis/
+ *  widget) rides this ONE save — one updateAgent + one version row (rule 4). */
 export async function updateAgentAction(
   agentId: string,
   input: {
@@ -154,6 +166,11 @@ export async function updateAgentAction(
     voiceId: string
     llm?: string
     language?: string
+    speech?: AgentConfig['speech']
+    transcription?: AgentConfig['transcription']
+    call?: AgentConfig['call']
+    analysis?: AgentConfig['analysis']
+    widget?: AgentConfig['widget']
   }
 ) {
   const db = await userClient()
@@ -169,6 +186,11 @@ export async function updateAgentAction(
       voiceId: input.voiceId,
       ...(input.llm ? { llm: input.llm } : {}),
       ...(input.language ? { language: input.language } : {}),
+      ...(input.speech && { speech: input.speech }),
+      ...(input.transcription && { transcription: input.transcription }),
+      ...(input.call && { call: input.call }),
+      ...(input.analysis && { analysis: input.analysis }),
+      ...(input.widget && { widget: input.widget }),
     }
     if (!validConfig(agentConfig)) throw new Error('Name, prompt and voice are required')
     await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
