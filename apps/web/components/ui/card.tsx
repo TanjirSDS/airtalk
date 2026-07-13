@@ -6,7 +6,7 @@ type DivProps = HTMLAttributes<HTMLDivElement>
 export function Card({ className, ...props }: DivProps) {
   return (
     <div
-      className={cn('rounded-xl border bg-card text-card-foreground shadow', className)}
+      className={cn('rounded-xl border bg-card text-card-foreground shadow-card', className)}
       {...props}
     />
   )
