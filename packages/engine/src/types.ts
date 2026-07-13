@@ -4,12 +4,18 @@
 export interface AgentConfig {
   name: string
   systemPrompt: string
+  /** The line the agent speaks first. Empty string = user speaks first (agent waits). */
   firstMessage: string
   voiceId: string
   /** Provider LLM identifier, e.g. 'gpt-4o' or 'gemini-2.5-flash'. Provider default if omitted. */
   llm?: string
   /** ISO 639-1, defaults to 'en'. */
   language?: string
+  /**
+   * Bring-your-own OpenAI-compatible endpoint (agent_type 'custom_llm'). The API
+   * key is NEVER stored here — only the id of a provider-side workspace secret.
+   */
+  customLlm?: { url: string; modelId?: string; apiKeySecretId?: string }
 }
 
 export interface CallEvent {
@@ -100,12 +106,26 @@ export interface VoiceEngine {
   /**
    * Descriptor for the provider's in-browser test-call widget: the UI injects
    * `scriptSrc` and renders `<tagName {...attrs}>`, never knowing the provider.
+   * `dynamicVariablesAttr` names the attribute that carries a JSON-string of
+   * dynamic variables, so the (provider-blind) component can inject test inputs.
    */
   testWidgetEmbed(providerAgentId: string): {
     scriptSrc: string
     tagName: string
     attrs: Record<string, string>
+    dynamicVariablesAttr: string
   }
+  /**
+   * Make the agent public (widget works signed-out) or private. Toggling on a
+   * public share turns this off-auth on; toggling the share off restores it.
+   */
+  setAgentPublic(providerAgentId: string, isPublic: boolean): Promise<void>
+  /**
+   * Store a value as a provider-side workspace secret and return its id. Used so
+   * a custom-LLM API key lands at the provider, never in our database.
+   */
+  createSecret(name: string, value: string): Promise<{ secretId: string }>
+
   /** All provider calls started in [afterUnix, beforeUnix) — nightly reconciliation. */
   listCalls(afterUnix: number, beforeUnix: number): Promise<ProviderCall[]>
   /** Replace the agent's server tools with exactly this set (empty array = none). */

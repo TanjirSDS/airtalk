@@ -1,8 +1,8 @@
-// Phase 8: suggestion payloads + the pure merge that folds an accepted
-// suggestion into a BusinessProfile. Browser-safe (templates subpath) — the
-// review UI and the apply action share these.
+// Phase 8 suggestion payloads + Phase 11's prompt-first merge: fold an accepted
+// suggestion into the freeform prompt TEXT via managed sections (see managed.ts).
+// Browser-safe (templates subpath) — the review UI and the apply action share these.
 
-import type { BusinessProfile } from './shared'
+import { getSection, setSection } from './managed'
 
 export const SUGGESTION_TYPES = [
   'faq_addition',
@@ -27,38 +27,75 @@ export interface SuggestionPayload {
   rationale?: string
 }
 
+// Managed sections applied suggestions land in. Distinct from a template's
+// rendered "## Frequently asked questions" so a freeform edit never clobbers it.
+export const FAQ_HEADING = '## FAQs'
+export const LEARNED_HEADING = '## Learned adjustments'
+
+// ponytail: single-line Q/A per FAQ — a multi-line answer would need a smarter
+// parser. Add one if answers ever grow past a sentence.
+function parseFaqs(body: string): { q: string; a: string }[] {
+  const faqs: { q: string; a: string }[] = []
+  let q: string | null = null
+  for (const line of body.split('\n')) {
+    const qm = line.match(/^Q:\s*(.*)/)
+    const am = line.match(/^A:\s*(.*)/)
+    if (qm) q = qm[1].trim()
+    else if (am && q !== null) {
+      faqs.push({ q, a: am[1].trim() })
+      q = null
+    }
+  }
+  return faqs
+}
+
+function serializeFaqs(faqs: { q: string; a: string }[]): string {
+  return faqs.map((f) => `Q: ${f.q}\nA: ${f.a}`).join('\n')
+}
+
+function bullets(body: string): string[] {
+  return body
+    .split('\n')
+    .map((l) => l.replace(/^[-*]\s*/, '').trim())
+    .filter(Boolean)
+}
+
 /**
- * Merge one accepted suggestion into the profile, or null when it can't be
- * auto-applied: kb_gap needs the owner to supply the info, malformed payloads
- * and exact duplicates are no-ops. A faq_addition whose question already
- * exists REPLACES that answer — that's the fix for "FAQ answered wrong".
+ * Apply one accepted suggestion to the prompt, or return null when it can't be
+ * auto-applied: kb_gap needs the owner to supply the info, malformed payloads and
+ * exact duplicates are no-ops. A faq_addition whose question already exists in the
+ * "## FAQs" section REPLACES that answer — that's the fix for "FAQ answered wrong"
+ * and why applying the same FAQ twice can never duplicate it. Missing section
+ * anchors are appended to the prompt end (see setSection).
  */
-export function applySuggestionToProfile(
-  profile: BusinessProfile,
+export function applySuggestionToPrompt(
+  prompt: string,
   type: SuggestionType,
   s: SuggestionPayload
-): BusinessProfile | null {
+): string | null {
   switch (type) {
     case 'faq_addition': {
       const q = s.q?.trim()
       const a = s.a?.trim()
       if (!q || !a) return null
-      const i = profile.faqs.findIndex((f) => f.q.trim().toLowerCase() === q.toLowerCase())
+      const faqs = parseFaqs(getSection(prompt, FAQ_HEADING) ?? '')
+      const i = faqs.findIndex((f) => f.q.toLowerCase() === q.toLowerCase())
       if (i >= 0) {
-        if (profile.faqs[i].a.trim() === a) return null
-        const faqs = [...profile.faqs]
-        faqs[i] = { q: profile.faqs[i].q, a }
-        return { ...profile, faqs }
+        if (faqs[i].a === a) return null // no change
+        faqs[i] = { q: faqs[i].q, a }
+      } else {
+        faqs.push({ q, a })
       }
-      return { ...profile, faqs: [...profile.faqs, { q, a }] }
+      return setSection(prompt, FAQ_HEADING, serializeFaqs(faqs))
     }
     case 'prompt_tweak':
     case 'escalation_rule': {
       const instruction = s.instruction?.trim()
       if (!instruction) return null
-      const existing = profile.extraInstructions ?? []
-      if (existing.includes(instruction)) return null
-      return { ...profile, extraInstructions: [...existing, instruction] }
+      const items = bullets(getSection(prompt, LEARNED_HEADING) ?? '')
+      if (items.some((b) => b.toLowerCase() === instruction.toLowerCase())) return null
+      items.push(instruction)
+      return setSection(prompt, LEARNED_HEADING, items.map((b) => `- ${b}`).join('\n'))
     }
     case 'kb_gap':
       return null
