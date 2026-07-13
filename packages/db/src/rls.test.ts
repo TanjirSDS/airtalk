@@ -42,9 +42,18 @@ describe.skipIf(!live)('RLS org isolation (live)', () => {
     orgs.push(org.id)
 
     await admin.from('org_members').insert({ org_id: org.id, user_id: u.user.id, role: 'owner' })
-    await admin
+    const { data: agentRow } = await admin
       .from('agents')
       .insert({ org_id: org.id, name: `${stamp}-agent-${tag}`, provider: 'elevenlabs' })
+      .select('id')
+      .single()
+    await admin.from('agent_test_cases').insert({
+      org_id: org.id,
+      agent_id: agentRow!.id,
+      name: `${stamp}-tc-${tag}`,
+      user_prompt: 'a scripted caller',
+      success_criteria: 'the agent booked an appointment',
+    })
     await admin.from('kb_documents').insert({
       org_id: org.id,
       provider_kb_id: `${stamp}-kb-${tag}`,
@@ -121,6 +130,27 @@ describe.skipIf(!live)('RLS org isolation (live)', () => {
       .insert({ org_id: orgs[1], e164: `+1555${'9999999'}`, first_name: `${stamp}-intruder` })
     expect(error).toBeTruthy()
     const { data } = await admin.from('contacts').select('id').eq('first_name', `${stamp}-intruder`)
+    expect(data).toHaveLength(0)
+  }, 30_000)
+
+  it('agent_test_cases are org-isolated (read + write)', async () => {
+    const { data: aT } = await clientA.from('agent_test_cases').select('name, org_id, agent_id')
+    const { data: bT } = await clientB.from('agent_test_cases').select('name, org_id')
+    expect(aT!.every((r) => r.org_id === orgs[0])).toBe(true)
+    expect(aT!.some((r) => r.name === `${stamp}-tc-a`)).toBe(true)
+    expect(aT!.some((r) => r.name === `${stamp}-tc-b`)).toBe(false)
+    expect(bT!.some((r) => r.name === `${stamp}-tc-a`)).toBe(false)
+
+    // A member cannot write a test case into another org (with-check rejects).
+    const { error } = await clientA.from('agent_test_cases').insert({
+      org_id: orgs[1],
+      agent_id: aT![0].agent_id,
+      name: `${stamp}-tc-intruder`,
+      user_prompt: 'x',
+      success_criteria: '',
+    })
+    expect(error).toBeTruthy()
+    const { data } = await admin.from('agent_test_cases').select('id').eq('name', `${stamp}-tc-intruder`)
     expect(data).toHaveLength(0)
   }, 30_000)
 

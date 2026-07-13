@@ -1,5 +1,7 @@
 // Seeds 20 synthetic calls for Phase 3 acceptance: npm run seed-calls
 // Deterministic and idempotent (upsert on provider_call_id = seed-conv-NN).
+// Each non-failed call also carries a deterministic post-call analysis block
+// (Phase 16 QA) so /qa and /analytics have real success/sentiment data to show.
 import { config } from 'dotenv'
 config({ path: '.env.local' })
 
@@ -38,6 +40,27 @@ function transcriptFor(summary: string, durationSecs: number) {
   ]
 }
 
+// Deterministic post-call analysis (Phase 16 QA) in the stored CallAnalysis shape.
+// A dropped ('failed') call produces no analysis; otherwise a single "Resolved"
+// success criterion passes for calls the agent handled, plus a mapped sentiment.
+const GOOD_OUTCOMES = new Set(['booked', 'lead_captured', 'question_answered'])
+const NEGATIVE_OUTCOMES = new Set(['escalated', 'spam'])
+function analysisFor(outcome: string) {
+  if (outcome === 'failed') return null
+  const resolved = GOOD_OUTCOMES.has(outcome)
+  return {
+    success: resolved,
+    criteria: [
+      {
+        name: 'Resolved',
+        result: resolved ? 'success' : 'failure',
+        rationale: resolved ? "The agent handled the caller's request." : 'The call was not fully resolved by the agent.',
+      },
+    ],
+    sentiment: resolved ? 'positive' : NEGATIVE_OUTCOMES.has(outcome) ? 'negative' : 'neutral',
+  }
+}
+
 async function main() {
   const db = serviceClient()
   const { data: agent } = await db.from('agents').select('id').limit(1).maybeSingle()
@@ -64,6 +87,7 @@ async function main() {
       status: 'done',
       outcome,
       summary,
+      analysis: analysisFor(outcome),
     }
   })
 

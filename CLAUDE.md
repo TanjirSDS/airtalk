@@ -928,3 +928,102 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   org; invoice list against the stripe-acceptance test-clock data + links open the
   hosted invoices; filters compose under RLS with no cross-org leakage (org B);
   dark-mode chart legibility (the palette is the Phase-3-validated set).
+
+### Phase 16 QA + simulation testing (2026-07-13)
+- 0014: plans.qa_enabled boolean (default false; growth+pro → true, starter false —
+  the choice: QA reporting is a paid feature like KB/adaptive, and it needs enough
+  call volume to be meaningful, which starter won't have) + agent_test_cases (id,
+  org_id, agent_id, name, user_prompt, success_criteria, last_result jsonb,
+  updated_by, updated_at, created_at) with agent_id ON DELETE CASCADE (a test case is
+  meaningless without its agent, like campaigns/agent_suggestions) + agent_test_cases
+  _org_rw RLS (is_org_member, already ORs is_admin — no admin clause). qaEnabled
+  threaded through all four org.ts spots (interface + MEMBER_ORG_SELECT + dev-bypass +
+  admin + normal return), the established add-a-plan-flag chore.
+- GATING (item 1): /qa gated on org.plan.qaEnabled → Starter sees the upsell card
+  (mirrors /knowledge, "Growth feature", new QaIcon). Detailed Calls tab is
+  ADDITIONALLY pro-only — gated on org.plan.id==='pro' (clearest signal; the Top
+  Questions feed is also pro-fed, see below). A non-pro who forces ?tab=calls gets an
+  inline Pro upsell, and the tab itself is hidden for non-pro. LOGGED: I used plan.id
+  ==='pro' rather than reusing adaptiveEnabled so the two gates stay independent.
+- DERIVATIONS (lib/qa-math.ts, pure + tested — rule-7 spirit, these numbers reach
+  customer conversations; 19 vitest cases). Definitions:
+  - analysed = calls with analysis OR an outcome (task's own definition; every seeded
+    call qualifies via outcome).
+  - successRate = share of CRITERIA-EVALUATED calls where EVERY success criterion
+    passed (result == 'success', case-insensitive). Calls with no criteria are
+    excluded from the denominator → null → card "—". (Distinct from analytics'
+    successRate, which is the EL-verdict/outcome heuristic; QA follows the spec's
+    "criteria all passed" wording.)
+  - resolutionRate / escalationRate: over calls WITH an outcome. resolution = not in
+    {escalated, failed}; escalation = outcome 'escalated' (our analog of Retell's
+    transfer metric).
+  - avgSentiment: sentiment label → score (positive +1 / neutral 0 / negative −1),
+    averaged over calls where sentiment is present; unrecognised labels skipped. Card
+    shows Positive/Neutral/Negative bands, "—" when none present.
+  - successTrend REUSES analytics-math bucketKey/buildBuckets/chooseGranularity so /qa
+    and /analytics split a date range identically (no second bucketing impl).
+  - topQuestions aggregates agent_suggestions faq_addition rows by question (case-
+    insensitive), count = model frequency ?? evidence length, ranked desc.
+- /qa (force-dynamic): 3 tabs via ?tab= (server-rendered, only the active tab's data
+  fetched), Link-based tab bar preserving the shared agent + date filters (native
+  <form method=get>, trailing-30-day default — the analytics controls pattern). One
+  bounded RLS-scoped fetch (ROW_CAP 20k) + JS aggregation. Overview = 5 stat cards
+  (Calls analysed / Success / Resolution / Escalation / Avg sentiment) + success-rate
+  trend line (QaSuccessTrend, reuses useChartTheme). Top Questions = table with
+  evidence links into /calls?call=<id>; empty state points non-adaptive plans at Pro
+  (that weekly extraction IS the feed). Detailed Calls (pro) = analysed calls with
+  per-criteria pass/fail Badges + rationale Popover + sentiment, each row deep-links
+  into the call drawer (/calls?call=<id>). Reuses applyCallFilters/parseCallFilters.
+- "Configure QA settings" (item 5) → /agents/{selected-or-first agent}?section=
+  extraction. settings-rail.tsx reads useSearchParams(); section=extraction opens the
+  Post-Call Data Extraction accordion (defaultValue) + scrolls to it (id anchor). No
+  duplicate editor — the criteria CONFIG stays the single source in the builder.
+- SIMULATE-ENDPOINT VERDICT (item 6, rule 6): endpoint is POST /v1/convai/agents/
+  {id}/simulate-conversation (verified 2026-07-13). It is DEPRECATED — EL points to
+  /v1/convai/agent-testing/create + /v1/convai/agents/{id}/run-tests (a two-step
+  test-suite API) — but still functional and the single-call fit for our ad-hoc
+  {persona, criteria} → {verdict, transcript}. SHIPPED ENABLED (deprecated ≠
+  unavailable); upgrade to the agent-testing flow if EL removes it. The Fern docs
+  truncate the nested request/response schema over fetch, so the mapping is from the
+  confirmed top-level fields + prior knowledge: body {simulation_specification:
+  {simulated_user_config:{prompt:{prompt: userPrompt}}}, extra_evaluation_criteria?:
+  [{id,name,type:'prompt',conversation_goal_prompt}] (same PromptEvaluationCriteria
+  as platform_settings.evaluation.criteria), new_turns_limit default 10000}; response
+  {simulated_conversation:[{role,message}], analysis:{call_successful,
+  evaluation_criteria_results, transcript_summary}} — analysis is the SAME post-call
+  model, so simulateConversation reuses normalizeAnalysis(). VoiceEngine gained
+  simulateConversation(providerAgentId, {userPrompt, criteria?}) → {passed, transcript,
+  criteria?, summary?}. UNTESTED LIVE (no EL key, like every prior phase) — confirm
+  the nested request shape against a live create/GET when keys exist.
+- SIMULATION UI: the builder has NO tab system (two-column editor + right rail), so
+  "Simulation" ships as a full-width section BELOW the editor (a new `simulation`
+  ReactNode prop on AgentBuilder, rendered like `rail`), not a literal tab — logged
+  as the faithful fit for the section-based builder. Test cases are fetched server-
+  side (survive the key={version} remount) and passed to SimulationPanel (client):
+  test-case table, "+ Test Case" dialog (name / simulated user / success criteria),
+  Run per row → runSimulationAction, a result dialog showing pass/fail + transcript.
+  Run is disabled (with a notice) only when the agent has no provider_agent_id yet.
+  runSimulationAction writes {passed, transcript, summary?, criteria?, ranAt} to
+  last_result and appends NO version row (a simulation never mutates config, rule 4).
+  No batch testing v1 (Retell's Batch Testing History out, per spec).
+- SEEDS (gating seeds + demo data): seed-calls now carries a deterministic analysis
+  block per non-failed call (a "Resolved" success criterion + a mapped sentiment) so
+  /qa AND /analytics have real success/sentiment data (failed calls → analysis null,
+  realistic). seed-learning UNCHANGED (its calls feed Top Questions via the Phase 8
+  learning cron, which is pro + OPENAI_API_KEY gated and model-generated — not
+  deterministic seed data). Hand-computed over seed-calls (20) + seed-learning (12) =
+  32 rows: analysed 32, resolution 24/32, escalation 5/32, successRate 13/18 (13 good
+  outcomes pass of 18 criteria-evaluated seed-calls rows; seed-learning has no
+  analysis → excluded), avgSentiment 10/18. qa-math.test.ts mirrors both seeds
+  verbatim and asserts exactly these (acceptance #1).
+- Nav: QA inserted after Analytics (canonical order), new QaIcon.
+- Acceptance verified OFFLINE (no Supabase/EL env as of Phase 16): typecheck + lint
+  (provider fence intact) + build clean (/qa route emits, 4.76 kB); 183 tests pass / 7
+  live-skip (+19 qa-math derivations incl. the seed-mirror; +2 engine simulate payload/
+  response mapping; +1 agent_test_cases RLS isolation, live-skip). LIVE acceptance
+  still needs the stack: apply 0014; run seed-calls + seed-learning and confirm the /qa
+  Overview cards match the hand-computed numbers above; a gated (starter) org sees the
+  upsell and a pro org sees Detailed Calls + Top Questions (after the learning cron
+  runs); a simulation Run round-trips against a real EL agent (confirm the nested
+  request shape on a live call) or is cleanly disabled; the "Configure QA settings"
+  deep-link opens the extraction section.
