@@ -80,6 +80,44 @@ export async function startCheckout(
   return session.url
 }
 
+export interface InvoiceRow {
+  id: string
+  created: number // unix seconds
+  amountCents: number // invoice total (incl. tax), in cents
+  currency: string
+  status: string // draft | open | paid | uncollectible | void
+  hostedUrl: string | null
+}
+
+/** One page of Stripe invoices for the org's customer, newest first. Cursor
+ *  pagination via starting_after (rule 6: Stripe list semantics). Empty when the
+ *  org has no Stripe customer yet (pre-subscription). Owner-gate at the caller. */
+export async function listInvoices(
+  db: SupabaseClient,
+  stripe: Stripe,
+  orgId: string,
+  opts?: { limit?: number; startingAfter?: string }
+): Promise<{ invoices: InvoiceRow[]; hasMore: boolean }> {
+  const org = await getOrg(db, orgId)
+  if (!org.stripe_customer_id) return { invoices: [], hasMore: false }
+  const page = await stripe.invoices.list({
+    customer: org.stripe_customer_id,
+    limit: opts?.limit ?? 12,
+    ...(opts?.startingAfter ? { starting_after: opts.startingAfter } : {}),
+  })
+  return {
+    invoices: page.data.map((i) => ({
+      id: i.id ?? '',
+      created: i.created,
+      amountCents: i.total,
+      currency: i.currency,
+      status: i.status ?? 'unknown',
+      hostedUrl: i.hosted_invoice_url ?? null,
+    })),
+    hasMore: page.has_more,
+  }
+}
+
 /** Customer portal: cards, invoices, cancel. */
 export async function portalUrl(db: SupabaseClient, stripe: Stripe, orgId: string, origin: string): Promise<string> {
   const org = await getOrg(db, orgId)

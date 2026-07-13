@@ -3,7 +3,7 @@
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { serviceClient } from '@airtalk/db'
-import { changePlan, portalUrl } from '../../lib/billing'
+import { changePlan, listInvoices, portalUrl, type InvoiceRow } from '../../lib/billing'
 import { activeOrg } from '../../lib/org'
 import { stripeClient } from '../../lib/stripe'
 
@@ -32,4 +32,12 @@ export async function choosePlanAction(formData: FormData) {
 export async function portalAction() {
   const org = await requireOwner()
   redirect(await portalUrl(serviceClient(), stripeClient(), org.orgId, await origin()))
+}
+
+/** Next page of invoices for the History tab "Load more" (owner-gated). */
+export async function loadInvoicesAction(
+  startingAfter: string
+): Promise<{ invoices: InvoiceRow[]; hasMore: boolean }> {
+  const org = await requireOwner()
+  return listInvoices(serviceClient(), stripeClient(), org.orgId, { startingAfter, limit: 12 })
 }

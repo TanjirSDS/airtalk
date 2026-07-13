@@ -11,6 +11,7 @@ import {
   BillingIcon,
   BookIcon,
   CampaignIcon,
+  ChartIcon,
   DashboardIcon,
   HashIcon,
   MenuIcon,
@@ -39,6 +40,7 @@ const NAV: { href: string; label: string; Icon: (p: IconProps) => ReactNode }[] 
   { href: '/calls', label: 'Call History', Icon: PhoneIcon },
   { href: '/contacts', label: 'Contacts', Icon: UsersIcon },
   { href: '/campaigns', label: 'Campaigns', Icon: CampaignIcon },
+  { href: '/analytics', label: 'Analytics', Icon: ChartIcon },
   { href: '/billing', label: 'Billing', Icon: BillingIcon },
 ]
 
