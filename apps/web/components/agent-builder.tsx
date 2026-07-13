@@ -89,6 +89,7 @@ export function AgentBuilder({
   versions,
   rate,
   rail,
+  simulation,
 }: {
   agentId: string
   providerAgentId: string | null
@@ -101,6 +102,8 @@ export function AgentBuilder({
   versions: VersionRow[]
   rate: { includedCentsPerMin: number; overageCentsPerMin: number; planName: string }
   rail: ReactNode
+  /** Phase 16 Simulation section, rendered full-width below the editor. */
+  simulation?: ReactNode
 }) {
   const isCustom = agentType === 'custom_llm'
 
@@ -267,6 +270,8 @@ export function AgentBuilder({
           <SettingsRail settings={settings} onChange={setSettings} />
         </aside>
       </div>
+
+      {simulation && <div className="mt-5">{simulation}</div>}
     </div>
   )
 }

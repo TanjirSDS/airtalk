@@ -16,6 +16,7 @@ import {
   HashIcon,
   MenuIcon,
   PhoneIcon,
+  QaIcon,
   UsersIcon,
   Waveform,
   type IconProps,
@@ -41,6 +42,7 @@ const NAV: { href: string; label: string; Icon: (p: IconProps) => ReactNode }[] 
   { href: '/contacts', label: 'Contacts', Icon: UsersIcon },
   { href: '/campaigns', label: 'Campaigns', Icon: CampaignIcon },
   { href: '/analytics', label: 'Analytics', Icon: ChartIcon },
+  { href: '/qa', label: 'QA', Icon: QaIcon },
   { href: '/billing', label: 'Billing', Icon: BillingIcon },
 ]
 

@@ -6,6 +6,8 @@ import type {
   CallEvent,
   KnowledgeSource,
   ProviderCall,
+  SimulationResult,
+  SimulationSpec,
   SipNumberConfig,
   Voice,
   VoiceEngine,
@@ -400,6 +402,43 @@ export class ElevenLabsEngine implements VoiceEngine {
       await this.req('DELETE', `/v1/convai/tools/${id}`).catch(() => {
         /* already gone or shared — an orphan tool is harmless */
       })
+    }
+  }
+
+  /**
+   * Phase 16: POST /v1/convai/agents/{id}/simulate-conversation (verified against
+   * elevenlabs.io/docs/api-reference/agents/simulate-conversation, 2026-07-13).
+   * The endpoint is DEPRECATED in favor of /v1/convai/agent-testing/create +
+   * /v1/convai/agents/{id}/run-tests, but it stays the single-call fit for our
+   * ad-hoc "{persona, criteria} → {verdict, transcript}" simulation (the newer
+   * flow is a two-step create-then-run test-suite API). Upgrade there if EL drops it.
+   *   Body: {simulation_specification:{simulated_user_config:{prompt:{prompt}}},
+   *          extra_evaluation_criteria?:[PromptEvaluationCriteria]}  — the persona
+   *   goes in simulated_user_config.prompt.prompt; the extra criterion reuses the
+   *   same {id,name,type:'prompt',conversation_goal_prompt} shape as
+   *   platform_settings.evaluation.criteria (Phase 12).
+   *   Response: {simulated_conversation:[{role,message,...}], analysis:{...}} where
+   *   analysis is the same post-call model normalizeAnalysis() already maps.
+   */
+  async simulateConversation(providerAgentId: string, spec: SimulationSpec): Promise<SimulationResult> {
+    const criteria = spec.criteria?.trim()
+    const res = await this.req('POST', `/v1/convai/agents/${providerAgentId}/simulate-conversation`, {
+      simulation_specification: {
+        simulated_user_config: { prompt: { prompt: spec.userPrompt } },
+      },
+      ...(criteria && {
+        extra_evaluation_criteria: [
+          { id: 'sim_success', name: 'Simulation success', type: 'prompt', conversation_goal_prompt: criteria },
+        ],
+      }),
+    })
+    const turns = Array.isArray(res.simulated_conversation) ? res.simulated_conversation : []
+    const analysis = this.normalizeAnalysis(res.analysis)
+    return {
+      passed: analysis?.success ?? null,
+      transcript: turns.map((t: any) => ({ role: t.role ?? 'agent', message: t.message ?? t.text ?? '' })),
+      ...(analysis?.criteria && { criteria: analysis.criteria }),
+      ...(res.analysis?.transcript_summary && { summary: String(res.analysis.transcript_summary) }),
     }
   }
 

@@ -227,3 +227,82 @@ describe('knowledge base + SIP (Phase 13)', () => {
     })
   })
 })
+
+// Phase 16: simulate-conversation payload + response mapping (offline analog of
+// running a real simulation — no EL key exists yet).
+describe('simulateConversation (Phase 16)', () => {
+  it('sends the persona + extra criterion and maps the graded response', async () => {
+    let captured: any
+    let capturedUrl = ''
+    const orig = globalThis.fetch
+    globalThis.fetch = (async (url: string, init: any) => {
+      capturedUrl = String(url)
+      captured = JSON.parse(init.body)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          simulated_conversation: [
+            { role: 'user', message: 'My heater is leaking.' },
+            { role: 'agent', message: 'I can book you for today.' },
+          ],
+          analysis: {
+            call_successful: 'success',
+            transcript_summary: 'Booked an emergency visit.',
+            evaluation_criteria_results: {
+              sim_success: { criteria_id: 'sim_success', result: 'success', rationale: 'Appointment booked.' },
+            },
+          },
+        }),
+        text: async () => '',
+      }
+    }) as unknown as typeof fetch
+    let result
+    try {
+      result = await engine.simulateConversation('agent_1', {
+        userPrompt: 'You are a caller whose water heater is leaking.',
+        criteria: 'The agent books an appointment.',
+      })
+    } finally {
+      globalThis.fetch = orig
+    }
+    expect(capturedUrl).toContain('/v1/convai/agents/agent_1/simulate-conversation')
+    expect(captured.simulation_specification.simulated_user_config.prompt.prompt).toBe(
+      'You are a caller whose water heater is leaking.'
+    )
+    expect(captured.extra_evaluation_criteria).toEqual([
+      { id: 'sim_success', name: 'Simulation success', type: 'prompt', conversation_goal_prompt: 'The agent books an appointment.' },
+    ])
+    expect(result).toMatchObject({
+      passed: true,
+      summary: 'Booked an emergency visit.',
+      transcript: [
+        { role: 'user', message: 'My heater is leaking.' },
+        { role: 'agent', message: 'I can book you for today.' },
+      ],
+      criteria: [{ name: 'sim_success', result: 'success', rationale: 'Appointment booked.' }],
+    })
+  })
+
+  it('omits extra_evaluation_criteria when no criteria given and reports unknown verdicts', async () => {
+    let captured: any
+    const orig = globalThis.fetch
+    globalThis.fetch = (async (_url: string, init: any) => {
+      captured = JSON.parse(init.body)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ simulated_conversation: [], analysis: { call_successful: 'unknown' } }),
+        text: async () => '',
+      }
+    }) as unknown as typeof fetch
+    let result
+    try {
+      result = await engine.simulateConversation('agent_1', { userPrompt: 'hi' })
+    } finally {
+      globalThis.fetch = orig
+    }
+    expect(captured.extra_evaluation_criteria).toBeUndefined()
+    expect(result).toEqual({ passed: null, transcript: [] })
+  })
+})

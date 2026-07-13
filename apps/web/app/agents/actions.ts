@@ -558,3 +558,78 @@ export async function renameVersionAction(agentId: string, version: number, labe
   revalidatePath(`/agents/${agentId}`)
   return {}
 }
+
+// ── Phase 16: simulation testing ─────────────────────────────────────────────
+
+/** Create or update a simulation test case. RLS scopes writes to the member's
+ *  org; org_id is stamped from the active org (agent_id is the ownership check). */
+export async function saveTestCaseAction(
+  agentId: string,
+  input: { id?: string; name: string; userPrompt: string; successCriteria: string }
+) {
+  const db = await userClient()
+  try {
+    const org = await requireOrg()
+    const email = await currentUserEmail(db)
+    const name = input.name.trim()
+    const userPrompt = input.userPrompt.trim()
+    if (!name || !userPrompt) throw new Error('Name and user prompt are required')
+    const row = {
+      org_id: org.orgId,
+      agent_id: agentId,
+      name,
+      user_prompt: userPrompt,
+      success_criteria: input.successCriteria.trim(),
+      updated_by: email,
+      updated_at: new Date().toISOString(),
+    }
+    const res = input.id
+      ? await db.from('agent_test_cases').update(row).eq('id', input.id).eq('agent_id', agentId)
+      : await db.from('agent_test_cases').insert(row)
+    if (res.error) throw new Error(res.error.message)
+    revalidatePath(`/agents/${agentId}`)
+    return {}
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+export async function deleteTestCaseAction(agentId: string, id: string) {
+  const db = await userClient()
+  const { error } = await db.from('agent_test_cases').delete().eq('id', id).eq('agent_id', agentId)
+  if (error) return { error: error.message }
+  revalidatePath(`/agents/${agentId}`)
+  return {}
+}
+
+/** Run a test case's simulation against the live provider agent and store the
+ *  verdict on the row. No version row — a simulation never mutates agent config. */
+export async function runSimulationAction(agentId: string, id: string) {
+  const db = await userClient()
+  try {
+    const agent = await getAgentRow(db, agentId) // RLS: throws for another org's id
+    if (!agent.provider_agent_id) throw new Error('This agent has not been created at the provider yet')
+    const { data: tc, error } = await db
+      .from('agent_test_cases')
+      .select('user_prompt, success_criteria')
+      .eq('id', id)
+      .eq('agent_id', agentId)
+      .single()
+    if (error) throw new Error(error.message)
+    const result = await makeEngine().simulateConversation(agent.provider_agent_id, {
+      userPrompt: tc.user_prompt,
+      criteria: tc.success_criteria || undefined,
+    })
+    const last_result = { ...result, ranAt: new Date().toISOString() }
+    const { error: upErr } = await db
+      .from('agent_test_cases')
+      .update({ last_result })
+      .eq('id', id)
+      .eq('agent_id', agentId)
+    if (upErr) throw new Error(upErr.message)
+    revalidatePath(`/agents/${agentId}`)
+    return { result: last_result }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+}

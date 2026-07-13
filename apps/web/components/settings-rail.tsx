@@ -8,7 +8,8 @@
 import type { DataCollectionField, SuccessCriterion } from '@airtalk/engine'
 import { CALL_DEFAULTS, SPEECH_DEFAULTS } from '@airtalk/engine/templates'
 import Link from 'next/link'
-import { useState, type KeyboardEvent } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { useEffect, useState, type KeyboardEvent } from 'react'
 import {
   Accordion,
   AccordionContent,
@@ -40,6 +41,14 @@ export function SettingsRail({
   settings: AgentSettings
   onChange: (s: AgentSettings) => void
 }) {
+  // Phase 16 deep-link: /qa "Configure QA settings" → ?section=extraction opens
+  // the Post-Call Data Extraction section here (single source, no duplicate editor).
+  const openExtraction = useSearchParams().get('section') === 'extraction'
+  useEffect(() => {
+    if (openExtraction)
+      document.getElementById('post-call-data-extraction')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [openExtraction])
+
   const set = <K extends keyof AgentSettings>(key: K, value: AgentSettings[K]) =>
     onChange({ ...settings, [key]: value })
 
@@ -50,7 +59,11 @@ export function SettingsRail({
   const setSc = (list: SuccessCriterion[]) => set('analysis', { ...settings.analysis, successCriteria: list })
 
   return (
-    <Accordion type="multiple" className="rounded-xl border bg-card px-4">
+    <Accordion
+      type="multiple"
+      defaultValue={openExtraction ? ['extraction'] : undefined}
+      className="rounded-xl border bg-card px-4"
+    >
       {/* Speech Settings */}
       <AccordionItem value="speech">
         <AccordionTrigger>Speech Settings</AccordionTrigger>
@@ -136,7 +149,7 @@ export function SettingsRail({
       </AccordionItem>
 
       {/* Post-Call Data Extraction */}
-      <AccordionItem value="extraction">
+      <AccordionItem value="extraction" id="post-call-data-extraction">
         <AccordionTrigger>Post-Call Data Extraction</AccordionTrigger>
         <AccordionContent className="space-y-5">
           <div className="space-y-2">

@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { AgentBuilder, type BuilderConfig } from '../../../components/agent-builder'
 import { CalcomConnectForm } from '../../../components/calcom-connect-form'
 import { AgentKbSection, type AgentKbDoc } from '../../../components/agent-kb-section'
+import { SimulationPanel, type SimTestCase } from '../../../components/simulation-panel'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../../../components/ui/accordion'
 import { includedRateCentsPerMin, OVERAGE_CENTS_PER_MIN } from '../../../lib/billing-math'
 import { makeEngine } from '../../../lib/engine'
@@ -124,6 +125,21 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     widget: stored.agentConfig.widget,
   }
 
+  // Simulation testing (Phase 16): test cases are org-scoped rows, fetched here
+  // so they survive the builder's key={version} remount on save.
+  const { data: testCaseRows } = await db
+    .from('agent_test_cases')
+    .select('id, name, user_prompt, success_criteria, last_result, updated_at')
+    .eq('agent_id', id)
+    .order('updated_at', { ascending: false })
+  const simulation = (
+    <SimulationPanel
+      agentId={id}
+      canRun={!!agent.provider_agent_id}
+      testCases={(testCaseRows ?? []) as SimTestCase[]}
+    />
+  )
+
   const versionRows: VersionRow[] = (versions ?? []).map((v) => ({
     version: v.version,
     createdAt: v.created_at,
@@ -146,6 +162,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       versions={versionRows}
       rate={rate}
       rail={rail}
+      simulation={simulation}
     />
   )
 }

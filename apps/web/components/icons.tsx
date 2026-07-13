@@ -110,6 +110,15 @@ export const ChartIcon = (p: IconProps) => (
   </Icon>
 )
 
+// QA: a clipboard with a check — quality review.
+export const QaIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M9 4H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2" />
+    <path d="M9 2h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" />
+    <path d="m9 14 2 2 4-4" />
+  </Icon>
+)
+
 export const LogOutIcon = (p: IconProps) => (
   <Icon {...p}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />

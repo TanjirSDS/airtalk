@@ -133,6 +133,25 @@ export interface WebhookRequest {
   signature: string | null
 }
 
+/** A simulation test (Phase 16): the provider runs a scripted user against the
+ *  agent and grades the result, all without placing a real call. */
+export interface SimulationSpec {
+  /** The persona/goal the simulated user follows. */
+  userPrompt: string
+  /** Extra success criterion the run is graded against (a goal prompt). Optional. */
+  criteria?: string
+}
+export interface SimulationResult {
+  /** Provider verdict: true = success, false = failure, null = unknown/no criteria. */
+  passed: boolean | null
+  /** The simulated conversation turns. */
+  transcript: { role: string; message: string }[]
+  /** Per-criterion results from the provider's post-sim analysis, when present. */
+  criteria?: { name: string; result: string; rationale?: string }[]
+  /** Provider's one-line transcript summary, when present. */
+  summary?: string
+}
+
 export interface VoiceEngine {
   createAgent(cfg: AgentConfig): Promise<{ providerAgentId: string }>
   updateAgent(providerAgentId: string, cfg: Partial<AgentConfig>): Promise<void>
@@ -203,6 +222,8 @@ export interface VoiceEngine {
   listCalls(afterUnix: number, beforeUnix: number): Promise<ProviderCall[]>
   /** Replace the agent's server tools with exactly this set (empty array = none). */
   setAgentTools(providerAgentId: string, tools: AgentTool[]): Promise<void>
+  /** Run a scripted-user simulation against the agent and grade it (Phase 16). */
+  simulateConversation(providerAgentId: string, spec: SimulationSpec): Promise<SimulationResult>
   /** Cheapest authenticated call — health checks. Rejects when the provider or key is bad. */
   ping(): Promise<void>
   verifyWebhook(req: WebhookRequest): boolean
