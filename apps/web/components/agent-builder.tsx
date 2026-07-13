@@ -5,11 +5,23 @@
 // edit state; the server page keys this by current version so a rollback/save
 // remounts it with fresh data.
 import type { Voice } from '@airtalk/engine'
-import { CALL_DEFAULTS, DEFAULT_ANALYSIS, DEFAULT_LLM, MODEL_INFO, modelLabel, SPEECH_DEFAULTS } from '@airtalk/engine/templates'
+import {
+  CALL_DEFAULTS,
+  DEFAULT_ANALYSIS,
+  DEFAULT_LLM,
+  defaultWorkflow,
+  MODEL_INFO,
+  modelLabel,
+  SPEECH_DEFAULTS,
+  validateWorkflow,
+  type WorkflowGraph,
+  type WorkflowKb,
+} from '@airtalk/engine/templates'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { updateAgentAction } from '../app/agents/actions'
+import { convertToFlowAction, updateAgentAction } from '../app/agents/actions'
 import { AgentHandbookDialog } from './agent-handbook-dialog'
 import { CustomLlmForm } from './custom-llm-form'
 import { ChevronRightIcon, CopyIcon } from './icons'
@@ -24,6 +36,22 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Select } from './ui/select'
+
+// Lazy-loaded so single/custom agents never pull the @xyflow bundle; the canvas is
+// browser-only (needs the DOM), so ssr:false.
+const FlowCanvas = dynamic(() => import('./flow/flow-canvas').then((m) => m.FlowCanvas), {
+  ssr: false,
+  loading: () => <div className="h-[620px] animate-pulse rounded-xl border bg-card" />,
+})
+
+/** Order-insensitive compare so a loaded flow doesn't read as dirty from key reordering. */
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val) =>
+    val && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(Object.keys(val).sort().map((k) => [k, (val as Record<string, unknown>)[k]]))
+      : val
+  )
+}
 
 const LANGUAGES: { code: string; name: string }[] = [
   { code: 'en', name: 'English' },
@@ -56,6 +84,8 @@ export interface BuilderConfig {
   call?: { maxDurationSecs?: number; endOnSilenceSecs?: number }
   analysis?: AgentSettings['analysis']
   widget?: { public?: boolean }
+  /** Conversational-flow graph (Phase 18, agent_type 'flow'). */
+  workflow?: WorkflowGraph
 }
 
 /** Fill the settings accordion from stored config, defaulting anything unset —
@@ -90,6 +120,7 @@ export function AgentBuilder({
   rate,
   rail,
   simulation,
+  flowKbDocs = [],
 }: {
   agentId: string
   providerAgentId: string | null
@@ -104,8 +135,11 @@ export function AgentBuilder({
   rail: ReactNode
   /** Phase 16 Simulation section, rendered full-width below the editor. */
   simulation?: ReactNode
+  /** Org KB docs for node-level attach on flow agents (Phase 18). */
+  flowKbDocs?: WorkflowKb[]
 }) {
   const isCustom = agentType === 'custom_llm'
+  const isFlow = agentType === 'flow'
 
   const [name, setName] = useState(config.name)
   const [prompt, setPrompt] = useState(config.systemPrompt)
@@ -116,27 +150,50 @@ export function AgentBuilder({
   const [firstMessage, setFirstMessage] = useState(config.firstMessage)
   const initialSettings = useMemo(() => initSettings(config), [config])
   const [settings, setSettings] = useState<AgentSettings>(initialSettings)
+  const [graph, setGraph] = useState<WorkflowGraph>(config.workflow ?? defaultWorkflow())
   const [pending, startTransition] = useTransition()
 
+  const flowErrors = useMemo(() => (isFlow ? validateWorkflow(graph) : []), [isFlow, graph])
   const effectiveFirstMessage = welcome === 'static' ? firstMessage : ''
   const settingsDirty = JSON.stringify(settings) !== JSON.stringify(initialSettings)
+  const graphDirty = isFlow && stableJson(graph) !== stableJson(config.workflow ?? defaultWorkflow())
   const dirty =
     name !== config.name ||
     prompt !== config.systemPrompt ||
     voiceId !== config.voiceId ||
     llm !== (config.llm || DEFAULT_LLM) ||
     language !== (config.language || 'en') ||
-    effectiveFirstMessage !== config.firstMessage ||
-    settingsDirty
+    (!isFlow && effectiveFirstMessage !== config.firstMessage) ||
+    settingsDirty ||
+    graphDirty
+
+  function convertToFlow() {
+    if (
+      !confirm(
+        'Convert this agent to a Conversational Flow? Its prompt moves into a Welcome step of a Begin → Welcome → End graph. This is one-way.'
+      )
+    )
+      return
+    startTransition(async () => {
+      const res = await convertToFlowAction(agentId)
+      if (res?.error) toast.error(res.error)
+      else toast.success('Converted to a flow')
+    })
+  }
 
   function save() {
+    if (isFlow && flowErrors.length) {
+      toast.error('Fix the flow before saving.')
+      return
+    }
     startTransition(async () => {
       // Phase 12: the whole accordion rides this ONE save — one updateAgent + one
-      // version row (rule 4), never per-section saves.
+      // version row (rule 4), never per-section saves. Flow agents also carry the graph
+      // (validated again server-side) and let the Begin node own who-speaks-first.
       const res = await updateAgentAction(agentId, {
         name,
         systemPrompt: prompt,
-        firstMessage: effectiveFirstMessage,
+        firstMessage: isFlow ? '' : effectiveFirstMessage,
         voiceId,
         llm,
         language,
@@ -145,6 +202,7 @@ export function AgentBuilder({
         call: settings.call,
         analysis: settings.analysis,
         widget: { public: settings.widgetPublic },
+        ...(isFlow && { workflow: graph }),
       })
       if (res.error) toast.error(res.error)
       else toast.success(`Saved as version ${res.version}`)
@@ -169,6 +227,16 @@ export function AgentBuilder({
           <Link className="text-sm text-muted-foreground hover:text-foreground" href={`/agents/${agentId}/learning`}>
             Learning
           </Link>
+          {agentType === 'single' && (
+            <button
+              type="button"
+              onClick={convertToFlow}
+              disabled={pending}
+              className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+            >
+              Convert to flow
+            </button>
+          )}
           <VersionsSheet agentId={agentId} versions={versions} />
           <ShareDialog agentId={agentId} initialToken={shareToken} />
           <Button onClick={save} disabled={pending || !dirty || !name.trim()}>
@@ -189,89 +257,160 @@ export function AgentBuilder({
         <Badge variant="secondary">{LANGUAGES.find((l) => l.code === language)?.name ?? language}</Badge>
       </div>
 
-      {/* Body: main editor + right rail */}
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {/* Body */}
+      {isFlow ? (
         <div className="space-y-4">
-          {/* Config row */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <Label>Voice</Label>
-              <VoicePickerDialog voices={voices} value={voiceId} onChange={setVoiceId} />
+          <ConfigRow
+            voices={voices}
+            voiceId={voiceId}
+            setVoiceId={setVoiceId}
+            language={language}
+            setLanguage={setLanguage}
+            llm={llm}
+            setLlm={setLlm}
+            prompt={prompt}
+            setPrompt={setPrompt}
+            showModel
+            showHandbook={false}
+          />
+          <FlowCanvas
+            graph={graph}
+            onChange={setGraph}
+            globalPrompt={prompt}
+            onGlobalPromptChange={setPrompt}
+            settings={settings}
+            onSettingsChange={setSettings}
+            kbDocs={flowKbDocs}
+            errors={flowErrors}
+          />
+          {embed && (
+            <div className="rounded-xl border bg-card p-4">
+              <h2 className="mb-1 text-sm font-semibold">Test your agent</h2>
+              <p className="mb-3 text-xs text-muted-foreground">
+                In-browser test calls start at the Begin node. Use the Simulation panel below to test
+                starting at a specific step.
+              </p>
+              <TestPanel embed={embed} agentId={agentId} />
             </div>
-            <div>
-              <Label htmlFor="language">Language</Label>
-              <Select id="language" value={language} onChange={(e) => setLanguage(e.target.value)}>
-                {LANGUAGES.map((l) => (
-                  <option key={l.code} value={l.code}>
-                    {l.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            {!isCustom && (
+          )}
+        </div>
+      ) : (
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="space-y-4">
+            <ConfigRow
+              voices={voices}
+              voiceId={voiceId}
+              setVoiceId={setVoiceId}
+              language={language}
+              setLanguage={setLanguage}
+              llm={llm}
+              setLlm={setLlm}
+              prompt={prompt}
+              setPrompt={setPrompt}
+              showModel={!isCustom}
+              showHandbook={!isCustom}
+            />
+            {isCustom ? (
+              <div className="rounded-xl border bg-card p-4">
+                <h2 className="mb-1 text-sm font-semibold">Custom LLM connection</h2>
+                <p className="mb-4 text-xs text-muted-foreground">
+                  This agent runs on your own model endpoint. Voice, language and sharing still apply.
+                </p>
+                <CustomLlmForm
+                  agentId={agentId}
+                  initial={{
+                    url: config.customLlm?.url ?? '',
+                    modelId: config.customLlm?.modelId ?? '',
+                    hasKey: !!config.customLlm?.apiKeySecretId,
+                  }}
+                />
+              </div>
+            ) : (
               <>
-                <div>
-                  <Label htmlFor="llm">LLM model</Label>
-                  <Select id="llm" value={llm} onChange={(e) => setLlm(e.target.value)}>
-                    {MODEL_INFO.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </Select>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {MODEL_INFO.find((m) => m.id === llm)?.hint}
-                  </p>
-                </div>
-                <div>
-                  <Label>Handbook</Label>
-                  <AgentHandbookDialog prompt={prompt} onChange={setPrompt} />
-                </div>
+                <WelcomeControl mode={welcome} setMode={setWelcome} message={firstMessage} setMessage={setFirstMessage} />
+                <PromptEditor value={prompt} onChange={setPrompt} />
               </>
             )}
           </div>
 
-          {isCustom ? (
-            <div className="rounded-xl border bg-card p-4">
-              <h2 className="mb-1 text-sm font-semibold">Custom LLM connection</h2>
-              <p className="mb-4 text-xs text-muted-foreground">
-                This agent runs on your own model endpoint. Voice, language and sharing still apply.
-              </p>
-              <CustomLlmForm
-                agentId={agentId}
-                initial={{
-                  url: config.customLlm?.url ?? '',
-                  modelId: config.customLlm?.modelId ?? '',
-                  hasKey: !!config.customLlm?.apiKeySecretId,
-                }}
-              />
-            </div>
-          ) : (
-            <>
-              <WelcomeControl
-                mode={welcome}
-                setMode={setWelcome}
-                message={firstMessage}
-                setMessage={setFirstMessage}
-              />
-              <PromptEditor value={prompt} onChange={setPrompt} />
-            </>
-          )}
+          <aside className="space-y-4">
+            {embed && (
+              <div className="rounded-xl border bg-card p-4">
+                <h2 className="mb-3 text-sm font-semibold">Test your agent</h2>
+                <TestPanel embed={embed} agentId={agentId} />
+              </div>
+            )}
+            {rail}
+            <SettingsRail settings={settings} onChange={setSettings} />
+          </aside>
         </div>
-
-        <aside className="space-y-4">
-          {embed && (
-            <div className="rounded-xl border bg-card p-4">
-              <h2 className="mb-3 text-sm font-semibold">Test your agent</h2>
-              <TestPanel embed={embed} agentId={agentId} />
-            </div>
-          )}
-          {rail}
-          <SettingsRail settings={settings} onChange={setSettings} />
-        </aside>
-      </div>
+      )}
 
       {simulation && <div className="mt-5">{simulation}</div>}
+    </div>
+  )
+}
+
+function ConfigRow({
+  voices,
+  voiceId,
+  setVoiceId,
+  language,
+  setLanguage,
+  llm,
+  setLlm,
+  prompt,
+  setPrompt,
+  showModel,
+  showHandbook,
+}: {
+  voices: Voice[]
+  voiceId: string
+  setVoiceId: (v: string) => void
+  language: string
+  setLanguage: (v: string) => void
+  llm: string
+  setLlm: (v: string) => void
+  prompt: string
+  setPrompt: (v: string) => void
+  showModel: boolean
+  showHandbook: boolean
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <div>
+        <Label>Voice</Label>
+        <VoicePickerDialog voices={voices} value={voiceId} onChange={setVoiceId} />
+      </div>
+      <div>
+        <Label htmlFor="language">Language</Label>
+        <Select id="language" value={language} onChange={(e) => setLanguage(e.target.value)}>
+          {LANGUAGES.map((l) => (
+            <option key={l.code} value={l.code}>
+              {l.name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      {showModel && (
+        <div>
+          <Label htmlFor="llm">LLM model</Label>
+          <Select id="llm" value={llm} onChange={(e) => setLlm(e.target.value)}>
+            {MODEL_INFO.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+          <p className="mt-1 text-xs text-muted-foreground">{MODEL_INFO.find((m) => m.id === llm)?.hint}</p>
+        </div>
+      )}
+      {showHandbook && (
+        <div>
+          <Label>Handbook</Label>
+          <AgentHandbookDialog prompt={prompt} onChange={setPrompt} />
+        </div>
+      )}
     </div>
   )
 }

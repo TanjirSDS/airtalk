@@ -1,4 +1,4 @@
-import { normalizeStoredConfigSafe } from '@airtalk/engine/templates'
+import { normalizeStoredConfigSafe, type WorkflowKb } from '@airtalk/engine/templates'
 import { notFound } from 'next/navigation'
 import { AgentBuilder, type BuilderConfig } from '../../../components/agent-builder'
 import { CalcomConnectForm } from '../../../components/calcom-connect-form'
@@ -57,7 +57,10 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
 
   // Knowledge base → the rail's Knowledge Base section. Docs are org-scoped
   // (kb_documents); attachment state comes from the provider (source of truth).
+  const isFlow = agent.agent_type === 'flow'
   let kbDocs: AgentKbDoc[] = []
+  // Flow agents attach KB per node (Phase 18), so they need the raw doc locators.
+  let flowKbDocs: WorkflowKb[] = []
   if (kbEnabled) {
     const [{ data: docRows }, attached] = await Promise.all([
       db.from('kb_documents').select('id, name, source_type, provider_kb_id').order('created_at', { ascending: false }),
@@ -74,13 +77,19 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       sourceType: d.source_type,
       attached: attached.has(d.provider_kb_id),
     }))
+    flowKbDocs = (docRows ?? []).map((d) => ({
+      knowledgeId: d.provider_kb_id,
+      name: d.name,
+      type: d.source_type,
+    }))
   }
 
   const showFunctions = stored.template === 'booking'
   const isCustom = agent.agent_type === 'custom_llm'
-  // Right rail reduced for custom-LLM agents (item 8).
+  // Right rail reduced for custom-LLM agents (item 8); flow agents move Functions/KB to
+  // node level (Phase 18), so no global rail — their settings live in the canvas panel.
   const rail =
-    !isCustom && (showFunctions || kbEnabled) ? (
+    !isCustom && !isFlow && (showFunctions || kbEnabled) ? (
       <Accordion type="multiple" defaultValue={['functions', 'kb']} className="rounded-xl border bg-card px-4">
         {showFunctions && (
           <AccordionItem value="functions">
@@ -123,6 +132,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     call: stored.agentConfig.call,
     analysis: stored.agentConfig.analysis,
     widget: stored.agentConfig.widget,
+    workflow: stored.agentConfig.workflow,
   }
 
   // Simulation testing (Phase 16): test cases are org-scoped rows, fetched here
@@ -132,11 +142,19 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     .select('id, name, user_prompt, success_criteria, last_result, updated_at')
     .eq('agent_id', id)
     .order('updated_at', { ascending: false })
+  // Flow agents (Phase 18): offer the graph's steps as sim starting nodes.
+  const startNodes =
+    isFlow && stored.agentConfig.workflow
+      ? stored.agentConfig.workflow.nodes
+          .filter((n) => n.type !== 'end')
+          .map((n) => ({ id: n.id, label: n.label || n.type.replace('_', ' ') }))
+      : []
   const simulation = (
     <SimulationPanel
       agentId={id}
       canRun={!!agent.provider_agent_id}
       testCases={(testCaseRows ?? []) as SimTestCase[]}
+      startNodes={startNodes}
     />
   )
 
@@ -163,6 +181,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       rate={rate}
       rail={rail}
       simulation={simulation}
+      flowKbDocs={flowKbDocs}
     />
   )
 }

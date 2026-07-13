@@ -42,6 +42,59 @@ export interface AgentConfig {
   analysis?: { dataCollection: DataCollectionField[]; successCriteria: SuccessCriterion[] }
   /** `public: false` requires signed auth to talk to the agent (widget/share stop working). */
   widget?: { public?: boolean }
+  /** Conversational-flow graph (Phase 18, agent_type 'flow'). Absent for single/custom agents. */
+  workflow?: WorkflowGraph
+}
+
+/**
+ * Provider-neutral conversational-flow graph (Phase 18). The adapter maps it onto
+ * ElevenLabs' top-level `workflow` (id-keyed nodes/edges + a synthetic `start` node);
+ * see elevenlabs.ts. Only the three node types EL supports for our use are modelled —
+ * conversation (subagent), transfer_number, end. The `start`/Begin node is NOT a
+ * member here: it's represented by `startNodeId` and synthesized on both sides.
+ */
+export type WorkflowNodeType = 'conversation' | 'transfer_number' | 'end'
+/** Who speaks first when a conversation node begins (EL entry_behavior). */
+export type WorkflowEntryBehavior = 'generate_immediately' | 'wait_for_user' | 'auto'
+/** A KB doc attached at node level — carries name+type because EL's additional_knowledge_base
+ *  wants a full {type,id,name} locator and the engine can't read our DB (rule 1). */
+export interface WorkflowKb {
+  knowledgeId: string
+  name: string
+  type: KnowledgeSource['type']
+}
+export interface WorkflowNode {
+  id: string
+  type: WorkflowNodeType
+  /** Human label (EL requires one on subagent nodes). */
+  label?: string
+  /** conversation: free-form goal appended to the system prompt (EL additional_prompt). */
+  prompt?: string
+  /** conversation: a fixed line to say verbatim. Encoded as a constrained additional_prompt —
+   *  EL's SDK node union has no dedicated static-'say' node, so we don't depend on one. */
+  staticText?: string
+  /** conversation: extra tools attached only while this node runs (EL additional_tool_ids). */
+  toolIds?: string[]
+  /** conversation: extra KB docs attached only while this node runs (EL additional_knowledge_base). */
+  kb?: WorkflowKb[]
+  /** conversation (entry node in the UI): who speaks first (EL entry_behavior). */
+  entryBehavior?: WorkflowEntryBehavior
+  /** transfer_number: E.164 destination the call is transferred to. */
+  transferTo?: string
+  /** Canvas layout, round-trips to EL node.position. */
+  position?: { x: number; y: number }
+}
+export interface WorkflowEdge {
+  from: string
+  to: string
+  /** Natural-language LLM routing condition. Empty/undefined = an unconditional edge. */
+  condition?: string
+}
+export interface WorkflowGraph {
+  /** id (within `nodes`) of the entry node the synthetic EL `start` node points at. */
+  startNodeId: string
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
 }
 
 /** Provider-neutral post-call analysis (Phase 12), stored as calls.analysis.
@@ -140,6 +193,10 @@ export interface SimulationSpec {
   userPrompt: string
   /** Extra success criterion the run is graded against (a goal prompt). Optional. */
   criteria?: string
+  /** Flow agents (Phase 18): start the simulated conversation at this workflow node id.
+   *  The embed widget can't carry starting_workflow_node_id, so the Test-panel Starting
+   *  Node picker rides this simulate path (VERIFY live — see the Phase 18 log). */
+  startingNodeId?: string
 }
 export interface SimulationResult {
   /** Provider verdict: true = success, false = failure, null = unknown/no criteria. */
@@ -156,6 +213,8 @@ export interface VoiceEngine {
   createAgent(cfg: AgentConfig): Promise<{ providerAgentId: string }>
   updateAgent(providerAgentId: string, cfg: Partial<AgentConfig>): Promise<void>
   deleteAgent(providerAgentId: string): Promise<void>
+  /** Read the provider's current config back as a neutral AgentConfig (flow hydration/drift). */
+  getAgent(providerAgentId: string): Promise<AgentConfig>
   importNumber(twilioSid: string, e164: string): Promise<{ providerNumberId: string }>
   /** Register a SIP-trunk number (no Twilio account) and return its provider id. */
   importSipNumber(cfg: SipNumberConfig): Promise<{ providerNumberId: string }>

@@ -60,6 +60,31 @@ describe('normalizeStoredConfig', () => {
     expect(normalizeStoredConfigSafe({ nope: 1 })).toBeNull()
     expect(() => normalizeStoredConfig(null)).toThrow()
   })
+
+  // Phase 18: a version row stores the whole StoredAgentConfig, so restore/rollback
+  // must return the flow graph intact for the canvas to re-render it correctly.
+  it('preserves a flow agent’s workflow through store/restore normalization', () => {
+    const flowStored = {
+      agentType: 'flow' as const,
+      template: null,
+      agentConfig: {
+        ...agentConfig,
+        firstMessage: '',
+        workflow: {
+          startNodeId: 'welcome',
+          nodes: [
+            { id: 'welcome', type: 'conversation' as const, label: 'Welcome', prompt: 'Greet the caller.' },
+            { id: 'end', type: 'end' as const, label: 'End call' },
+          ],
+          edges: [{ from: 'welcome', to: 'end', condition: 'Done.' }],
+        },
+      },
+    }
+    const restored = normalizeStoredConfig(flowStored)
+    expect(restored.agentConfig.workflow).toEqual(flowStored.agentConfig.workflow)
+    // Idempotent: a second pass (re-render/migrate) is byte-identical.
+    expect(JSON.stringify(normalizeStoredConfig(restored))).toBe(JSON.stringify(restored))
+  })
 })
 
 describe('scratchAgentConfig', () => {

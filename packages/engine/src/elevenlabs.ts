@@ -13,6 +13,7 @@ import type {
   VoiceEngine,
   WebhookRequest,
 } from './types'
+import { workflowFromProvider, workflowToProvider } from './workflow-map'
 
 /** Human name → provider identifier (data_collection key / evaluation criterion id). */
 function slugify(name: string): string {
@@ -133,10 +134,23 @@ export class ElevenLabsEngine implements VoiceEngine {
     }
     if (cfg.widget?.public !== undefined) platform_settings.auth = { enable_auth: !cfg.widget.public }
 
+    // Flow agents: let real SDK/phone callers start at a chosen node (opt-in gate at
+    // platform_settings.overrides.enable_starting_workflow_node_id_from_client — verified
+    // Phase 18; the embed widget can't carry it, so the Test picker rides simulate). VERIFY live.
+    if (cfg.workflow) {
+      platform_settings.overrides = {
+        ...(platform_settings.overrides as object | undefined),
+        enable_starting_workflow_node_id_from_client: true,
+      }
+    }
+
     return {
       ...(cfg.name !== undefined && { name: cfg.name }),
       conversation_config,
       ...(Object.keys(platform_settings).length && { platform_settings }),
+      // workflow is a TOP-LEVEL sibling of conversation_config in the create/update body
+      // (verified Phase 18 — NOT conversation_config.workflow). Absent for single/custom agents.
+      ...(cfg.workflow && { workflow: workflowToProvider(cfg.workflow) }),
     }
   }
 
@@ -151,6 +165,36 @@ export class ElevenLabsEngine implements VoiceEngine {
 
   async deleteAgent(providerAgentId: string) {
     await this.req('DELETE', `/v1/convai/agents/${providerAgentId}`)
+  }
+
+  /**
+   * GET /v1/convai/agents/{id} → neutral AgentConfig. GET returns a TOP-LEVEL `workflow`
+   * (verified Phase 18), so hydration/round-trip works. Parses the fields the builder
+   * cares about (name/prompt/first-message/voice/llm/language/custom-LLM + workflow); the
+   * Phase 12 tuning settings aren't reversed — our stored config is the authoritative
+   * hydration source, this is for verification/drift.
+   */
+  async getAgent(providerAgentId: string): Promise<AgentConfig> {
+    const a = await this.req('GET', `/v1/convai/agents/${providerAgentId}`)
+    const agent = a.conversation_config?.agent ?? {}
+    const prompt = agent.prompt ?? {}
+    const workflow = workflowFromProvider(a.workflow)
+    return {
+      name: a.name ?? '',
+      systemPrompt: prompt.prompt ?? '',
+      firstMessage: agent.first_message ?? '',
+      voiceId: a.conversation_config?.tts?.voice_id ?? '',
+      ...(prompt.llm && prompt.llm !== 'custom-llm' && { llm: prompt.llm }),
+      ...(agent.language && { language: agent.language }),
+      ...(prompt.custom_llm && {
+        customLlm: {
+          url: prompt.custom_llm.url,
+          ...(prompt.custom_llm.model_id && { modelId: prompt.custom_llm.model_id }),
+          ...(prompt.custom_llm.api_key?.secret_id && { apiKeySecretId: prompt.custom_llm.api_key.secret_id }),
+        },
+      }),
+      ...(workflow && { workflow }),
+    }
   }
 
   // ElevenLabs wants the Twilio *account* creds, not the number SID — twilioSid is
@@ -425,6 +469,12 @@ export class ElevenLabsEngine implements VoiceEngine {
     const res = await this.req('POST', `/v1/convai/agents/${providerAgentId}/simulate-conversation`, {
       simulation_specification: {
         simulated_user_config: { prompt: { prompt: spec.userPrompt } },
+        // Flow agents (Phase 18): start the sim at a chosen node. starting_workflow_node_id's
+        // verified home is the conversation-initiation request; the simulate endpoint's
+        // acceptance of it here is UNVERIFIED — confirm on a live run. Only sent when picked.
+        ...(spec.startingNodeId && {
+          conversation_initiation_client_data: { starting_workflow_node_id: spec.startingNodeId },
+        }),
       },
       ...(criteria && {
         extra_evaluation_criteria: [

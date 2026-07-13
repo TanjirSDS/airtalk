@@ -9,6 +9,8 @@ import {
   DEFAULT_ANALYSIS,
   ensureDisclosureAndConduct,
   normalizeStoredConfig,
+  validateWorkflow,
+  wrapPromptAsFlow,
   type AgentType,
   type BusinessProfile,
   type StoredAgentConfig,
@@ -171,6 +173,8 @@ export async function updateAgentAction(
     call?: AgentConfig['call']
     analysis?: AgentConfig['analysis']
     widget?: AgentConfig['widget']
+    /** Flow agents (Phase 18) carry the whole graph; re-validated here (item 5). */
+    workflow?: AgentConfig['workflow']
   }
 ) {
   const db = await userClient()
@@ -191,8 +195,15 @@ export async function updateAgentAction(
       ...(input.call && { call: input.call }),
       ...(input.analysis && { analysis: input.analysis }),
       ...(input.widget && { widget: input.widget }),
+      ...(input.workflow && { workflow: input.workflow }),
     }
     if (!validConfig(agentConfig)) throw new Error('Name, prompt and voice are required')
+    // Server-side gate (item 5): a flow agent must carry a valid graph — the client
+    // validates too, but this is the real fence. Non-flow agents never send workflow.
+    if (stored.agentType === 'flow') {
+      const errs = validateWorkflow(agentConfig.workflow)
+      if (errs.length) throw new Error(`Invalid flow: ${errs[0]}`)
+    }
     await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
     const newStored: StoredAgentConfig = { ...stored, agentConfig }
     const { error } = await db
@@ -239,6 +250,41 @@ export async function rollbackAgentAction(agentId: string, version: number) {
   if (updErr) throw new Error(updErr.message)
   await insertVersion(db, agentId, stored)
   revalidatePath(`/agents/${agentId}`)
+}
+
+/**
+ * Convert a single-prompt agent to a conversational flow (Phase 18). One-way: wraps the
+ * current prompt into the Welcome node of a fresh default graph (Begin → Welcome → End),
+ * flips agent_type to 'flow', pushes to the provider, and appends a version (rule 4).
+ * No flow→single. The global prompt is kept as the shared persona across steps.
+ */
+export async function convertToFlowAction(agentId: string) {
+  const db = await userClient()
+  try {
+    const email = await currentUserEmail(db)
+    const agent = await getAgentRow(db, agentId)
+    const stored = normalizeStoredConfig(agent.config)
+    if (stored.agentType !== 'single') throw new Error('Only single-prompt agents can be converted to a flow')
+    const workflow = wrapPromptAsFlow(stored.agentConfig.systemPrompt)
+    const agentConfig: AgentConfig = { ...stored.agentConfig, firstMessage: '', workflow }
+    await makeEngine().updateAgent(agent.provider_agent_id, agentConfig)
+    const newStored: StoredAgentConfig = { ...stored, agentType: 'flow', agentConfig }
+    const { error } = await db
+      .from('agents')
+      .update({
+        config: newStored,
+        agent_type: 'flow',
+        updated_by: email,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', agentId)
+    if (error) throw new Error(error.message)
+    await insertVersion(db, agentId, newStored)
+    revalidatePath(`/agents/${agentId}`)
+    revalidatePath('/agents')
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /** Copy an agent: fresh provider agent + row "Copy of X" + version 1 (rule 4). */
@@ -594,7 +640,7 @@ export async function deleteTestCaseAction(agentId: string, id: string) {
 
 /** Run a test case's simulation against the live provider agent and store the
  *  verdict on the row. No version row — a simulation never mutates agent config. */
-export async function runSimulationAction(agentId: string, id: string) {
+export async function runSimulationAction(agentId: string, id: string, startingNodeId?: string) {
   const db = await userClient()
   try {
     const agent = await getAgentRow(db, agentId) // RLS: throws for another org's id
@@ -609,6 +655,8 @@ export async function runSimulationAction(agentId: string, id: string) {
     const result = await makeEngine().simulateConversation(agent.provider_agent_id, {
       userPrompt: tc.user_prompt,
       criteria: tc.success_criteria || undefined,
+      // Flow agents (Phase 18): start the sim at the picked node (Test-panel picker).
+      ...(startingNodeId && { startingNodeId }),
     })
     const last_result = { ...result, ranAt: new Date().toISOString() }
     const { error: upErr } = await db
