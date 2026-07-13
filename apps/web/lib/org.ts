@@ -21,6 +21,44 @@ export interface ActiveOrg {
 // actually belongs to two orgs.
 export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
   const db = await userClient()
+
+  // ponytail: DEV_BYPASS_AUTH=1 → first org as owner, no signed-in user —
+  // local skeleton preview only. Delete once local signup works.
+  if (process.env.DEV_BYPASS_AUTH === '1') {
+    const { data: org } = await db
+      .from('orgs')
+      .select(
+        'id, name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans!orgs_plan_id_fkey(id, name, max_agents, kb_enabled, adaptive_enabled)'
+      )
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (!org) return null
+    const plan = org.plans as unknown as {
+      id: string
+      name: string
+      max_agents: number
+      kb_enabled: boolean
+      adaptive_enabled: boolean
+    }
+    return {
+      orgId: org.id,
+      role: 'owner',
+      name: org.name,
+      minutesCap: org.minutes_cap,
+      overagePolicy: org.overage_policy,
+      paymentFailedAt: org.payment_failed_at,
+      pendingPlanId: org.pending_plan_id,
+      plan: {
+        id: plan.id,
+        name: plan.name,
+        maxAgents: plan.max_agents,
+        kbEnabled: plan.kb_enabled,
+        adaptiveEnabled: plan.adaptive_enabled,
+      },
+    }
+  }
+
   const {
     data: { user },
   } = await db.auth.getUser()
@@ -37,7 +75,7 @@ export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
       const { data: org } = await db
         .from('orgs')
         .select(
-          'id, name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans(id, name, max_agents, kb_enabled, adaptive_enabled)'
+          'id, name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans!orgs_plan_id_fkey(id, name, max_agents, kb_enabled, adaptive_enabled)'
         )
         .eq('id', viewAs)
         .maybeSingle()
@@ -73,7 +111,7 @@ export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
   const { data } = await db
     .from('org_members')
     .select(
-      'org_id, role, orgs(name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans(id, name, max_agents, kb_enabled, adaptive_enabled))'
+      'org_id, role, orgs(name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans!orgs_plan_id_fkey(id, name, max_agents, kb_enabled, adaptive_enabled))'
     )
     .eq('user_id', user.id)
     .limit(1)
