@@ -148,7 +148,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning className={`${display.variable} ${sans.variable}`}>
       <body className="antialiased">
-        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
           {org ? (
             <AppShell data={await shellData(org)} banner={<Banners />} signOut={signOut}>
               {children}

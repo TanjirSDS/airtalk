@@ -7,8 +7,6 @@ import '@xyflow/react/dist/style.css'
 import {
   addEdge,
   Background,
-  Controls,
-  MiniMap,
   Panel,
   ReactFlow,
   ReactFlowProvider,
@@ -28,8 +26,9 @@ import type {
   WorkflowNode,
   WorkflowNodeType,
 } from '@airtalk/engine/templates'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { SettingsRail, type AgentSettings } from '../settings-rail'
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/accordion'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -97,10 +96,38 @@ function makeNode(type: WorkflowNodeType, position: { x: number; y: number }): N
   return { id, type, position, data: { label: 'New step', prompt: '' } }
 }
 
-const PALETTE: { type: WorkflowNodeType; label: string }[] = [
-  { type: 'conversation', label: 'Conversation' },
-  { type: 'transfer_number', label: 'Transfer to number' },
-  { type: 'end', label: 'End call' },
+const glyph = (d: string) => (
+  <svg
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.4}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className="h-3.5 w-3.5"
+  >
+    <path d={d} />
+  </svg>
+)
+const txt = (s: string) => <span className="text-[10px] font-bold leading-none">{s}</span>
+
+// The full node vocabulary (matches the reference tool). Only the three with a `type`
+// are wired into Airtalk's engine today; the rest are shown but marked "Soon" — no fake
+// buttons that would produce an unmappable node.
+const NODE_ITEMS: { label: string; type?: WorkflowNodeType; icon: ReactNode }[] = [
+  { label: 'Conversation', type: 'conversation', icon: glyph('M3 4.8A1.8 1.8 0 014.8 3h6.4A1.8 1.8 0 0113 4.8V8a1.8 1.8 0 01-1.8 1.8H6L3 12z') },
+  { label: 'Subagent', icon: glyph('M4.5 6h7v5h-7zM8 3.2V6M6.6 8.4h.01M9.4 8.4h.01') },
+  { label: 'Function', icon: txt('ƒ') },
+  { label: 'Transfer to number', type: 'transfer_number', icon: glyph('M4.2 3.2l1.4 2.7L4 7.2c.8 1.7 2 3 3.8 3.8l1.3-1.6 2.7 1.4v1.4a1 1 0 01-1 1C6.8 13.2 3 9.4 3 4.6a1 1 0 011-1z') },
+  { label: 'Press Digit', icon: txt('01') },
+  { label: 'Logic Split', icon: glyph('M4 13V8a3 3 0 013-3h5M10.5 3l2.5 2-2.5 2') },
+  { label: 'Agent Transfer', icon: glyph('M3.5 6h9M10 3.5L12.5 6M12.5 10h-9M6 13.5L3.5 11') },
+  { label: 'In-Call SMS', icon: glyph('M3 4.8A1.8 1.8 0 014.8 3h6.4A1.8 1.8 0 0113 4.8V8a1.8 1.8 0 01-1.8 1.8H6L3 12zM5.8 6h4.4M5.8 8h2.4') },
+  { label: 'Extract Variable', icon: txt('{ }') },
+  { label: 'Code', icon: txt('</>') },
+  { label: 'MCP', icon: glyph('M8 2.5l4.5 2.6v5.2L8 12.9 3.5 10.3V5.1z') },
+  { label: 'End call', type: 'end', icon: glyph('M5 5h6v6H5z') },
+  { label: 'Note', icon: glyph('M5 3h6v10H5zM6.8 6h2.4M6.8 8.4h2.4') },
 ]
 
 export interface FlowCanvasProps {
@@ -114,6 +141,11 @@ export interface FlowCanvasProps {
   kbDocs: WorkflowKb[]
   /** Validation errors from the builder (item 5); shown as a banner. */
   errors: string[]
+  /** Agent-level controls (voice/language/model) rendered atop the global settings panel. */
+  agentSettings?: ReactNode
+  /** For the "Agent details" footer under the node list. */
+  agentId: string
+  rate: { includedCentsPerMin: number; overageCentsPerMin: number; planName: string }
 }
 
 export function FlowCanvas(props: FlowCanvasProps) {
@@ -133,6 +165,9 @@ function FlowCanvasInner({
   onSettingsChange,
   kbDocs,
   errors,
+  agentSettings,
+  agentId,
+  rate,
 }: FlowCanvasProps) {
   const initial = useMemo(() => toFlow(graph), [graph])
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes)
@@ -141,6 +176,7 @@ function FlowCanvasInner({
   const [selEdge, setSelEdge] = useState<string | null>(null)
   const [mode, setMode] = useState<'select' | 'pan'>('pan')
   const [find, setFind] = useState('')
+  const [rightTab, setRightTab] = useState<'global' | 'node'>('global')
   const { screenToFlowPosition, setCenter, getNodes } = useReactFlow()
 
   // Push canvas state up to the builder (dirty/validate/save) without a re-render loop:
@@ -173,6 +209,13 @@ function FlowCanvasInner({
   const selectedNode = nodes.find((n) => n.id === selNode) ?? null
   const selectedEdge = edges.find((e) => e.id === selEdge) ?? null
   const entryId = edges.find((e) => e.source === BEGIN)?.target ?? null
+  // Rough token estimate (≈4 chars/token) of the global prompt + every node's instructions.
+  const estTokens = useMemo(() => {
+    const text =
+      globalPrompt +
+      nodes.map((n) => `${(n.data as NodeData).prompt ?? ''}${(n.data as NodeData).staticText ?? ''}`).join('')
+    return Math.ceil(text.length / 4)
+  }, [globalPrompt, nodes])
 
   return (
     <EdgeConditionContext.Provider value={setEdgeCondition}>
@@ -186,26 +229,76 @@ function FlowCanvasInner({
           </ul>
         </div>
       )}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-        {/* Canvas + palette */}
-        <div className="flex gap-3">
-          <div className="w-40 shrink-0 space-y-2">
-            <p className="text-xs font-semibold text-muted-foreground">Add a step</p>
-            {PALETTE.map((p) => (
-              <div
-                key={p.type}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData('application/flow', p.type)}
-                className="cursor-grab rounded-lg border bg-card px-3 py-2 text-xs shadow-sm active:cursor-grabbing hover:border-brand"
-              >
-                {p.label}
-              </div>
-            ))}
-            <p className="pt-2 text-[11px] text-muted-foreground">Drag onto the canvas, then connect the dots.</p>
+      <div className="grid gap-4 lg:h-[calc(100vh-8rem)] lg:grid-cols-[220px_minmax(0,1fr)_380px]">
+        {/* Left: node types + agent details */}
+        <aside className="flex flex-col overflow-hidden rounded-xl border bg-card">
+          <div className="flex-1 overflow-y-auto p-3">
+            <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Add a step</p>
+            <div className="mt-2 space-y-0.5">
+              {NODE_ITEMS.map((n) => {
+                const supported = !!n.type
+                return (
+                  <div
+                    key={n.label}
+                    draggable={supported}
+                    onDragStart={
+                      supported ? (e) => e.dataTransfer.setData('application/flow', n.type as string) : undefined
+                    }
+                    title={supported ? 'Drag onto the canvas' : 'Coming soon'}
+                    className={
+                      'flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ' +
+                      (supported
+                        ? 'cursor-grab text-foreground hover:bg-accent active:cursor-grabbing'
+                        : 'cursor-not-allowed text-muted-foreground/60')
+                    }
+                  >
+                    <span
+                      className={
+                        'grid h-6 w-6 shrink-0 place-items-center rounded-md border ' +
+                        (supported ? 'bg-card text-foreground' : 'bg-muted/40 text-muted-foreground/50')
+                      }
+                    >
+                      {n.icon}
+                    </span>
+                    <span className="flex-1 truncate">{n.label}</span>
+                    {!supported && <span className="text-[10px] font-normal text-muted-foreground/50">Soon</span>}
+                  </div>
+                )
+              })}
+            </div>
           </div>
+          <div className="shrink-0 border-t p-3 text-xs">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-semibold text-muted-foreground">Agent details</span>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(agentId)}
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+                title="Copy agent ID"
+              >
+                Copy ID
+              </button>
+            </div>
+            <dl className="space-y-1">
+              <div className="flex items-center justify-between">
+                <dt className="text-muted-foreground">Cost</dt>
+                <dd className="font-medium">${(rate.includedCentsPerMin / 100).toFixed(2)}/min</dd>
+              </div>
+              <div className="flex items-center justify-between">
+                <dt className="text-muted-foreground">Latency</dt>
+                <dd className="text-muted-foreground/70">— not measured</dd>
+              </div>
+              <div className="flex items-center justify-between">
+                <dt className="text-muted-foreground">Est. tokens</dt>
+                <dd className="font-medium">~{estTokens.toLocaleString()}</dd>
+              </div>
+            </dl>
+          </div>
+        </aside>
 
-          <div
-            className="h-[620px] flex-1 rounded-xl border bg-background"
+        {/* Center: the canvas (kept roomy) */}
+        <div
+          className="h-[70vh] rounded-xl border bg-background lg:h-full"
             onDrop={(e) => {
               e.preventDefault()
               const type = e.dataTransfer.getData('application/flow') as WorkflowNodeType
@@ -230,8 +323,11 @@ function FlowCanvasInner({
               }
               onReconnect={(oldEdge, c) => setEdges((es) => reconnectEdge(oldEdge, c, es))}
               onSelectionChange={(p: OnSelectionChangeParams) => {
-                setSelNode(p.nodes[0]?.id ?? null)
-                setSelEdge(p.edges[0]?.id ?? null)
+                const n = p.nodes[0]?.id ?? null
+                const e = p.edges[0]?.id ?? null
+                setSelNode(n)
+                setSelEdge(e)
+                if (n || e) setRightTab('node')
               }}
               onBeforeDelete={async ({ nodes: dn, edges: de }) => ({
                 // Never delete Begin, its edge, or the entry node (would strand the start).
@@ -245,8 +341,6 @@ function FlowCanvasInner({
               proOptions={{ hideAttribution: true }}
             >
               <Background />
-              <Controls />
-              <MiniMap pannable zoomable />
               <Panel position="bottom-center">
                 <div className="flex items-center gap-2 rounded-lg border bg-card px-2 py-1.5 shadow-pop">
                   <button
@@ -295,41 +389,66 @@ function FlowCanvasInner({
                 </div>
               </Panel>
             </ReactFlow>
-          </div>
         </div>
 
-        {/* Config panel: node config, edge condition, or (nothing selected) global settings. */}
-        <div className="rounded-xl border bg-card p-4">
-          {selectedNode && selectedNode.id !== BEGIN ? (
-            <NodeConfig
-              key={selectedNode.id}
-              node={selectedNode}
-              isEntry={selectedNode.id === entryId}
-              kbDocs={kbDocs}
-              onChange={(patch) => updateNodeData(selectedNode.id, patch)}
-              onDelete={() => removeNode(selectedNode.id)}
-            />
-          ) : selectedNode?.id === BEGIN ? (
-            <BeginConfig
-              entryNode={nodes.find((n) => n.id === entryId) ?? null}
-              onEntryBehavior={(b) => entryId && updateNodeData(entryId, { entryBehavior: b })}
-            />
-          ) : selectedEdge ? (
-            <EdgeConfig
-              key={selectedEdge.id}
-              condition={(selectedEdge.data as { condition?: string })?.condition ?? ''}
-              onChange={(c) => setEdgeCondition(selectedEdge.id, c)}
-              onDelete={() => removeEdge(selectedEdge.id)}
-            />
-          ) : (
-            <GlobalConfig
-              prompt={globalPrompt}
-              onPromptChange={onGlobalPromptChange}
-              settings={settings}
-              onSettingsChange={onSettingsChange}
-            />
-          )}
-        </div>
+        {/* Right: tabbed Global / Node settings. */}
+        <aside className="flex flex-col overflow-hidden rounded-xl border bg-card">
+          <div className="flex shrink-0 border-b">
+            {(['global', 'node'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setRightTab(t)}
+                className={
+                  '-mb-px flex-1 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ' +
+                  (rightTab === t
+                    ? 'border-brand text-brand'
+                    : 'border-transparent text-muted-foreground hover:text-foreground')
+                }
+              >
+                {t === 'global' ? 'Global Settings' : 'Node Settings'}
+              </button>
+            ))}
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            {rightTab === 'node' ? (
+              selectedNode && selectedNode.id !== BEGIN ? (
+                <NodeConfig
+                  key={selectedNode.id}
+                  node={selectedNode}
+                  isEntry={selectedNode.id === entryId}
+                  kbDocs={kbDocs}
+                  onChange={(patch) => updateNodeData(selectedNode.id, patch)}
+                  onDelete={() => removeNode(selectedNode.id)}
+                />
+              ) : selectedNode?.id === BEGIN ? (
+                <BeginConfig
+                  entryNode={nodes.find((n) => n.id === entryId) ?? null}
+                  onEntryBehavior={(b) => entryId && updateNodeData(entryId, { entryBehavior: b })}
+                />
+              ) : selectedEdge ? (
+                <EdgeConfig
+                  key={selectedEdge.id}
+                  condition={(selectedEdge.data as { condition?: string })?.condition ?? ''}
+                  onChange={(c) => setEdgeCondition(selectedEdge.id, c)}
+                  onDelete={() => removeEdge(selectedEdge.id)}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Select a step or connection on the canvas to edit its settings.
+                </p>
+              )
+            ) : (
+              <GlobalConfig
+                agentSettings={agentSettings}
+                prompt={globalPrompt}
+                onPromptChange={onGlobalPromptChange}
+                settings={settings}
+                onSettingsChange={onSettingsChange}
+              />
+            )}
+          </div>
+        </aside>
       </div>
     </EdgeConditionContext.Provider>
   )
@@ -525,34 +644,40 @@ function EdgeConfig({
 }
 
 function GlobalConfig({
+  agentSettings,
   prompt,
   onPromptChange,
   settings,
   onSettingsChange,
 }: {
+  agentSettings?: ReactNode
   prompt: string
   onPromptChange: (s: string) => void
   settings: AgentSettings
   onSettingsChange: (s: AgentSettings) => void
 }) {
   return (
-    <div className="space-y-4">
-      <div>
-        <h3 className="text-sm font-semibold">Global settings</h3>
-        <p className="text-xs text-muted-foreground">Applies across every step. Select a step or connection to edit it.</p>
-      </div>
-      <div>
-        <Label htmlFor="global-prompt">Global prompt</Label>
-        <Textarea
-          id="global-prompt"
-          rows={6}
-          value={prompt}
-          onChange={(e) => onPromptChange(e.target.value)}
-          placeholder="Persona, business facts, and rules shared by every step."
-          className="font-mono text-xs"
-        />
-      </div>
-      <SettingsRail settings={settings} onChange={onSettingsChange} />
+    <div>
+      <Accordion type="multiple" defaultValue={['agent', 'prompt']}>
+        <AccordionItem value="agent">
+          <AccordionTrigger>Agent Settings</AccordionTrigger>
+          <AccordionContent className="space-y-3">{agentSettings}</AccordionContent>
+        </AccordionItem>
+        <AccordionItem value="prompt">
+          <AccordionTrigger>Global Prompt</AccordionTrigger>
+          <AccordionContent>
+            <Textarea
+              id="global-prompt"
+              rows={6}
+              value={prompt}
+              onChange={(e) => onPromptChange(e.target.value)}
+              placeholder="Persona, business facts, and rules shared by every step."
+              className="font-mono text-xs"
+            />
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+      <SettingsRail bare settings={settings} onChange={onSettingsChange} />
     </div>
   )
 }

@@ -37,9 +37,12 @@ const MAX_ANALYSIS_ROWS = 30 // ElevenLabs caps evaluation criteria at 30 (verif
 export function SettingsRail({
   settings,
   onChange,
+  bare = false,
 }: {
   settings: AgentSettings
   onChange: (s: AgentSettings) => void
+  /** Drop the card wrapper so this sits as flat sections inside another panel (flow builder). */
+  bare?: boolean
 }) {
   // Phase 16 deep-link: /qa "Configure QA settings" → ?section=extraction opens
   // the Post-Call Data Extraction section here (single source, no duplicate editor).
@@ -62,7 +65,7 @@ export function SettingsRail({
     <Accordion
       type="multiple"
       defaultValue={openExtraction ? ['extraction'] : undefined}
-      className="rounded-xl border bg-card px-4"
+      className={bare ? '' : 'rounded-xl border bg-card px-4'}
     >
       {/* Speech Settings */}
       <AccordionItem value="speech">

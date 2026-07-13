@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { cn } from '../lib/utils'
 import type { Membership } from '../lib/org'
 import { AccountMenu } from './account-menu'
@@ -166,9 +166,17 @@ export function AppShell({
   children: ReactNode
 }) {
   const pathname = usePathname()
-  const [collapsed, setCollapsed] = useState(data.initialCollapsed)
+  // The agent builder (/agents/<id>) wants maximum canvas room, so the sidebar
+  // defaults to collapsed there; elsewhere it follows the saved preference. A manual
+  // toggle still wins within a page (this only re-snaps when crossing the boundary).
+  const onBuilder = useMemo(() => /^\/agents\/[^/]+$/.test(pathname), [pathname])
+  const [collapsed, setCollapsed] = useState(data.initialCollapsed || onBuilder)
   const [mobileOpen, setMobileOpen] = useState(false)
   const current = NAV.find((n) => isActive(pathname, n.href))?.label
+
+  useEffect(() => {
+    setCollapsed(onBuilder ? true : data.initialCollapsed)
+  }, [onBuilder, data.initialCollapsed])
 
   function toggleCollapse() {
     setCollapsed((c) => {
@@ -241,7 +249,13 @@ export function AppShell({
           {banner}
 
           <main className="flex-1">
-            <div className="mx-auto w-full max-w-6xl px-4 py-8 lg:px-8">{children}</div>
+            {/* The agent builder goes full-bleed (no centered max-width) so the flow
+                canvas uses the whole screen; every other page stays centered. */}
+            {onBuilder ? (
+              <div className="w-full px-4 py-4 lg:px-6">{children}</div>
+            ) : (
+              <div className="mx-auto w-full max-w-6xl px-4 py-8 lg:px-8">{children}</div>
+            )}
           </main>
         </div>
       </div>
