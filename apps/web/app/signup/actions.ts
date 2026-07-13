@@ -14,6 +14,7 @@ import {
   type AvailableNumber,
 } from '../../lib/numbers'
 import { activeOrg } from '../../lib/org'
+import { provisionOrg } from '../../lib/orgs-write'
 import { stripeClient } from '../../lib/stripe'
 import { userClient } from '../../lib/supabase-server'
 
@@ -35,23 +36,12 @@ export async function createOrgAction(
   if (!user) redirect('/signup')
 
   // One org per user in self-serve; a second visit just continues the flow.
+  // (Additional workspaces come from the switcher's createWorkspaceAction.)
   const { data: existing } = await db.from('org_members').select('org_id').limit(1).maybeSingle()
   if (!existing) {
-    // Org + owner membership are service-role writes (members can't insert
-    // either under RLS — Phase 4 kept membership management out of user reach).
-    const svc = serviceClient()
-    const { data: starter } = await svc.from('plans').select('included_minutes').eq('id', 'starter').single()
-    const { data: org, error } = await svc
-      .from('orgs')
-      .insert({ name, minutes_cap: starter?.included_minutes ?? 750 })
-      .select('id')
-      .single()
-    if (error) return { error: error.message }
-    const { error: memberErr } = await svc
-      .from('org_members')
-      .insert({ org_id: org.id, user_id: user.id, role: 'owner' })
-    if (memberErr) return { error: memberErr.message }
-    await emit('org/created', { orgId: org.id })
+    const { orgId, error } = await provisionOrg(user.id, name)
+    if (error || !orgId) return { error: error ?? 'Could not create workspace.' }
+    await emit('org/created', { orgId })
   }
   redirect('/signup/plan')
 }

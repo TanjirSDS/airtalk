@@ -371,3 +371,90 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   first agent with an org. Acceptance needs live infra (still no Supabase/
   OpenAI env): apply 0008, seed-learning, trigger agent-learning in the
   Inngest dev UI, then apply/rollback on /agents/[id]/learning.
+
+### Phase 9 UI infrastructure (2026-07-13)
+- Pure UI phase — NO provider/schema changes (0001–0008 unchanged, eslint
+  provider fence untouched). Everything phases 10–18 build on lands here.
+- shadcn/ui, Tailwind v4 / React 19 style (function components, no forwardRef —
+  ref rides props; `data-slot`-free). New primitives in components/ui/:
+  dialog, sheet (dialog-based, side cva), drawer (vaul), dropdown-menu, popover,
+  tooltip, tabs, table, command (cmdk), accordion, switch, checkbox, skeleton,
+  sonner (Toaster), avatar, separator, scroll-area, slider. All restyled to
+  Signal tokens (rounded-lg/xl, bg-popover, shadow-pop, brand focus ring). The
+  hand-rolled badge/button/card/input/label/select/textarea are LEFT AS-IS
+  (their APIs are consumed widely; shadcn versions weren't drop-in) — new code
+  uses whichever fits. components.json added (new-york, cssVariables, aliases).
+  Added `@/*` → `./*` path alias in apps/web/tsconfig.json so new ui files use
+  `@/lib/utils`; existing relative imports keep working.
+- New deps (web workspace): next-themes, sonner, cmdk, vaul, tw-animate-css,
+  and @radix-ui/react-{dialog,dropdown-menu,tabs,tooltip,popover,accordion,
+  switch,checkbox,avatar,separator,scroll-area,slider,slot}. tw-animate-css is
+  the Tailwind-v4 successor to tailwindcss-animate — `@import 'tw-animate-css'`
+  gives animate-in/fade/zoom/slide used by the overlay primitives. Radix
+  accordion height animation needs keyframes we define ourselves:
+  --animate-accordion-{down,up} in @theme + @keyframes reading
+  --radix-accordion-content-height.
+- Dark tokens: @theme is the LIGHT baseline; a plain `.dark {}` selector
+  redefines the SAME --color-* names with dark values. Tailwind v4 utilities
+  compile to `var(--color-x)` (verified in built CSS: .bg-card ->
+  var(--color-card)), so bg-*/text-*/border-* switch automatically when
+  next-themes toggles `.dark` on <html> — no `dark:` variants needed anywhere.
+  `@custom-variant dark (&:where(.dark, .dark *))` is declared for one-off
+  overrides. Added --color-popover(-foreground) (shadcn needs it). Shadows
+  darkened in .dark (light rgba(12,14,20) shadows vanish on dark); brand hue
+  kept; live/warn/destructive stay saturated. `color-scheme: light|dark` on html
+  for native controls.
+- WHAT FOUGHT BACK: a comment `every bg-*/text-*/border-* utility` inside
+  globals.css — the `*/` sequences PREMATURELY CLOSE the CSS comment, leaking
+  the rest as invalid CSS. Symptom was insidious: `next build` still "succeeded"
+  but emitted a truncated stylesheet with ZERO custom-color utilities (dark mode
+  silently dead). Never put `*/` inside a CSS comment; and verify the built CSS,
+  not just the exit code. (No @source needed — Tailwind auto-detection scans the
+  worktree fine once the comment is valid.)
+- next-themes: attribute="class", defaultTheme="system", enableSystem,
+  disableTransitionOnChange; suppressHydrationWarning on <html>; its pre-paint
+  inline script needs the CSP 'unsafe-inline' script-src we already ship → no
+  flash. options are system/light/dark (radio group in the account menu).
+  useTheme consumers (Toaster, account-menu, dashboard-charts) guard on a
+  mounted flag to avoid hydration mismatch.
+- Charts (dashboard-charts.tsx): recharts sets colors as SVG attributes, which
+  don't resolve var(), so chrome (grid/axes/tooltip/line/bar-spacer) is picked
+  from resolvedTheme via useTheme+mounted. OUTCOME_COLORS fills are the
+  CVD-validated set and DON'T change per theme (saturated enough on dark cards).
+- Sidebar v2 (app-shell.tsx): desktop <aside> collapses 264px↔72px icon rail
+  (Tooltip labels when railed); mobile is a left Sheet. Collapse persisted in
+  cookie `sidebar-collapsed` (client writes document.cookie; layout reads it SSR
+  for initialCollapsed → no flash). NAV is one array; "Calls"→"Call History";
+  canonical future order noted in a comment so later phases just insert an item
+  + its icon. SidebarBody is MODULE-scope (not nested) so toggling never
+  remounts the switcher/menus.
+- Workspace switcher (top): shows active org + plan, dropdown lists
+  listMemberships() + "Create workspace" (dialog → createWorkspaceAction). Multi
+  org via cookie `active-org`, honored by activeOrg() AFTER admin-view-org (that
+  keeps precedence) and only for orgs the user is a member of (else falls back
+  to first membership — never strands the user). Org creation is shared:
+  lib/orgs-write.ts provisionOrg() (service-role org+owner-membership, server
+  only — not a 'use server' export so userId is never client-supplied) is reused
+  by BOTH signup's createOrgAction and the switcher's createWorkspaceAction.
+  Switch = set cookie + redirect('/dashboard') so every RSC re-renders scoped to
+  the new org. seed-orgs extended: owner A is also a member of org B so one user
+  sees both workspaces (switcher acceptance).
+- Usage widget (usage-widget.tsx, above the account menu — the switcher is now
+  the org identity, so no separate "org card"): collapsed pill (used/cap + bar,
+  ≥80% warn / ≥100% danger, same thresholds as the layout UsageBanner) →
+  popover with period, plan, overage policy + overage minutes, Upgrade→/billing.
+  Data from currentUsage() (cap falls back to org.minutesCap before first call).
+- Account menu (bottom): avatar + email, theme radio (system/light/dark), Sign
+  out (existing layout signOut action, threaded through as a prop).
+- Toasts: <Toaster/> mounted in root layout (theme-aware). Used for switch
+  errors / would-be create feedback where a redirect doesn't already say it.
+- Misc: app/page.tsx `/`→redirect('/dashboard'); loading.tsx skeletons for
+  dashboard/agents/calls/campaigns/billing; shared <EmptyState icon title
+  description cta?/> (server-safe) for future pages.
+- Cookie names introduced: `active-org` (switcher), `sidebar-collapsed` (rail).
+- Acceptance verified here: npm run lint + build clean, provider fence intact,
+  96 tests pass, built CSS confirmed to carry every custom-color utility as
+  var() + the .dark overrides. Live visual checks (theme persistence across
+  reloads, dark legibility of every page, mobile slide-over, switcher swapping
+  data with a 2-org user) still need the stack stood up — no Supabase/env as of
+  Phase 9. Run seed-orgs (now cross-membered) once it is.

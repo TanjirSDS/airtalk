@@ -2,6 +2,14 @@ import { cookies } from 'next/headers'
 import { cache } from 'react'
 import { userClient } from './supabase-server'
 
+/** Org-switcher cookie (Phase 9): the workspace the user last switched to.
+ *  Honored by activeOrg() below when it names an org they're a member of. */
+export const ACTIVE_ORG_COOKIE = 'active-org'
+
+// Shared select for a membership row + its org + plan (used by activeOrg).
+const MEMBER_ORG_SELECT =
+  'org_id, role, orgs(name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans!orgs_plan_id_fkey(id, name, max_agents, kb_enabled, adaptive_enabled))'
+
 export interface ActiveOrg {
   orgId: string
   role: string
@@ -108,14 +116,24 @@ export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
     // non-admin (or dangling org id): the cookie is meaningless — ignore it.
   }
 
-  const { data } = await db
-    .from('org_members')
-    .select(
-      'org_id, role, orgs(name, minutes_cap, overage_policy, payment_failed_at, pending_plan_id, plans!orgs_plan_id_fkey(id, name, max_agents, kb_enabled, adaptive_enabled))'
-    )
-    .eq('user_id', user.id)
-    .limit(1)
-    .maybeSingle()
+  // Org switcher (Phase 9): if the active-org cookie names an org the user
+  // belongs to, use it; otherwise fall back to first membership. RLS also
+  // scopes this select, so a cookie pointing elsewhere simply misses.
+  const cookieOrgId = (await cookies()).get(ACTIVE_ORG_COOKIE)?.value
+  const byCookie = cookieOrgId
+    ? (
+        await db
+          .from('org_members')
+          .select(MEMBER_ORG_SELECT)
+          .eq('user_id', user.id)
+          .eq('org_id', cookieOrgId)
+          .maybeSingle()
+      ).data
+    : null
+  const data =
+    byCookie ??
+    (await db.from('org_members').select(MEMBER_ORG_SELECT).eq('user_id', user.id).limit(1).maybeSingle())
+      .data
   if (!data) return null
   const org = data.orgs as any
   return {
@@ -134,6 +152,31 @@ export const activeOrg = cache(async (): Promise<ActiveOrg | null> => {
       adaptiveEnabled: org.plans.adaptive_enabled,
     },
   }
+})
+
+export interface Membership {
+  orgId: string
+  name: string
+  role: string
+}
+
+/** Every org the signed-in user belongs to, for the workspace switcher.
+ *  RLS scopes org_members to the user's own rows. Empty under DEV_BYPASS_AUTH
+ *  (no signed-in user) — the switcher then just shows the active org. */
+export const listMemberships = cache(async (): Promise<Membership[]> => {
+  const db = await userClient()
+  const {
+    data: { user },
+  } = await db.auth.getUser()
+  if (!user) return []
+  const { data } = await db
+    .from('org_members')
+    .select('org_id, role, orgs(name)')
+    .eq('user_id', user.id)
+  return (data ?? []).map((m) => {
+    const org = m.orgs as unknown as { name?: string } | null
+    return { orgId: m.org_id, name: org?.name ?? 'Workspace', role: m.role }
+  })
 })
 
 /** Current UTC month's usage row for the org, or null before its first call. */

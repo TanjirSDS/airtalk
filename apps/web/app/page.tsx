@@ -1,3 +1,7 @@
+import { redirect } from 'next/navigation'
+
+// Middleware already routes signed-out users to /login and org-less users to
+// /signup; a signed-in member lands on the dashboard.
 export default function Home() {
-  return <main>Airtalk — Phase 1 has no UI. See /api/health.</main>
+  redirect('/dashboard')
 }

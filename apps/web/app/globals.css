@@ -1,4 +1,8 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
+
+/* Tailwind v4 dark variant: class strategy, toggled by next-themes on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 /* ── Airtalk "Signal" design system ───────────────────────────────────────
    A voice/telephony control plane. Committed light theme, cool-tinted
@@ -10,6 +14,8 @@
   --color-foreground: #0c0e14;
   --color-card: #ffffff;
   --color-card-foreground: #0c0e14;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #0c0e14;
   --color-muted: #eef1f5;
   --color-muted-foreground: #616b7a;
   --color-border: #e6e9ef;
@@ -49,11 +55,74 @@
   --shadow-card: 0 1px 2px rgba(12, 14, 20, 0.04), 0 1px 3px rgba(12, 14, 20, 0.05);
   --shadow-pop: 0 12px 32px -8px rgba(12, 14, 20, 0.14), 0 4px 10px -6px rgba(12, 14, 20, 0.1);
   --shadow-brand: 0 10px 24px -10px rgba(84, 87, 229, 0.55);
+
+  /* Radix accordion collapse (height driven by --radix-accordion-content-height) */
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+}
+
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+/* ── Dark theme ───────────────────────────────────────────────────────────
+   Same token names, dark values — every color utility switches automatically
+   because Tailwind v4 utilities reference the var(--color-…) tokens. Brand hue
+   preserved (iris indigo); meaning colors (live emerald, warn amber,
+   destructive red) stay saturated enough to read on dark surfaces. */
+.dark {
+  --color-background: #0a0c11;
+  --color-foreground: #e8ecf3;
+  --color-card: #13161e;
+  --color-card-foreground: #e8ecf3;
+  --color-popover: #13161e;
+  --color-popover-foreground: #e8ecf3;
+  --color-muted: #1a1e28;
+  --color-muted-foreground: #8b97a8;
+  --color-border: #262b37;
+  --color-input: #333a48;
+  --color-primary: #6669ec;
+  --color-primary-foreground: #ffffff;
+  --color-brand: #8486f4;
+  --color-brand-strong: #9b9df7;
+  --color-brand-soft: #262a54;
+  --color-brand-softer: #1b1d38;
+  --color-live: #1fca8b;
+  --color-live-soft: #0f2c22;
+  --color-warn: #e0982a;
+  --color-warn-soft: #33280e;
+  --color-destructive: #f05b60;
+  --color-destructive-foreground: #ffffff;
+  --color-danger-soft: #351a1c;
+  --color-secondary: #1a1e28;
+  --color-secondary-foreground: #cbd3df;
+  --color-accent: #1f2430;
+  --color-accent-foreground: #e8ecf3;
+  --color-ring: #6d70ee;
 }
 
 @layer base {
   * {
     border-color: var(--color-border);
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
   }
   html {
     -webkit-font-smoothing: antialiased;
