@@ -174,6 +174,37 @@ describe('elevenlabs webhook handler', () => {
     expect(db.tables.calls[0].booking_ref).toBe('bk_uid_1')
   })
 
+  it('maps the post-call analysis block into calls.analysis (Phase 12)', async () => {
+    const db = fakeDb()
+    await handleElevenLabsWebhook(body, sign(body), engine, db)
+    const analysis = db.tables.calls[0].analysis
+    expect(analysis).toMatchObject({ success: true, sentiment: 'neutral' })
+    expect(analysis.data).toMatchObject({ user_sentiment: 'neutral' })
+    expect(analysis.criteria[0]).toMatchObject({ name: 'call_successful', result: 'success' })
+  })
+
+  it('prefers an EL failure verdict over an optimistic classifier label (Phase 12)', async () => {
+    const failed = structuredClone(fixture)
+    ;(failed.data.analysis as { call_successful: string }).call_successful = 'failure'
+    const b = JSON.stringify(failed)
+    const db = fakeDb()
+    const classify = async () => ({ outcome: 'booked' as const, summary: 'booked a visit' })
+    await handleElevenLabsWebhook(b, sign(b), engine, db, classify)
+    expect(db.tables.calls[0].outcome).toBe('failed')
+    expect(db.tables.calls[0].analysis.success).toBe(false)
+  })
+
+  it('falls back to the classifier when the payload carries no analysis (Phase 12)', async () => {
+    const bare = structuredClone(fixture) as { data: { analysis?: unknown } }
+    delete bare.data.analysis
+    const b = JSON.stringify(bare)
+    const db = fakeDb()
+    const classify = async () => ({ outcome: 'question_answered' as const, summary: 'answered a question' })
+    await handleElevenLabsWebhook(b, sign(b), engine, db, classify)
+    expect(db.tables.calls[0].outcome).toBe('question_answered')
+    expect(db.tables.calls[0].analysis).toBeNull()
+  })
+
   it('opt_out classification adds a do-not-call row and scrubs pending contacts (Phase 7)', async () => {
     const db = fakeDb()
     db.tables.agents.push({

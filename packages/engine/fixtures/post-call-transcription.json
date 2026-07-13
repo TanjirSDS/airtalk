@@ -1,5 +1,5 @@
 {
-  "_note": "SYNTHETIC fixture built from the documented shape. Replace with a captured live webhook body in Phase 1 and delete this key.",
+  "_note": "SYNTHETIC fixture built from the documented shape. Replace with a captured live webhook body once keys exist and delete this key. The analysis block (call_successful, transcript_summary, evaluation_criteria_results, data_collection_results) was extended synthetically for Phase 12 from the Get-Conversation OpenAPI shape.",
   "type": "post_call_transcription",
   "event_timestamp": 1752300042,
   "data": {
@@ -25,7 +25,28 @@
     },
     "analysis": {
       "call_successful": "success",
-      "transcript_summary": "Caller reported a leaking kitchen sink; agent collected contact details."
+      "transcript_summary": "Caller reported a leaking kitchen sink; agent collected contact details.",
+      "evaluation_criteria_results": {
+        "call_successful": {
+          "criteria_id": "call_successful",
+          "result": "success",
+          "rationale": "The agent collected the caller's name and number to schedule a visit."
+        }
+      },
+      "data_collection_results": {
+        "call_summary": {
+          "data_collection_id": "call_summary",
+          "value": "Caller reported a leaking kitchen sink; agent collected contact details.",
+          "rationale": "Summarized from the transcript.",
+          "json_schema": { "type": "string", "description": "A concise summary of the call." }
+        },
+        "user_sentiment": {
+          "data_collection_id": "user_sentiment",
+          "value": "neutral",
+          "rationale": "The caller was matter-of-fact, neither upset nor pleased.",
+          "json_schema": { "type": "string", "description": "The caller's overall sentiment: positive, neutral, or negative." }
+        }
+      }
     }
   }
 }

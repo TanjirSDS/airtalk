@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import type {
   AgentConfig,
   AgentTool,
+  CallAnalysis,
   CallEvent,
   KnowledgeSource,
   ProviderCall,
@@ -9,6 +10,17 @@ import type {
   VoiceEngine,
   WebhookRequest,
 } from './types'
+
+/** Human name → provider identifier (data_collection key / evaluation criterion id). */
+function slugify(name: string): string {
+  return (
+    name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'field'
+  )
+}
 
 // Endpoint paths verified against https://elevenlabs.io/docs/eleven-agents/api-reference
 // on 2026-07-12. Payload details marked VERIFY below must be confirmed against a
@@ -42,36 +54,86 @@ export class ElevenLabsEngine implements VoiceEngine {
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
   }
 
-  /** Maps our AgentConfig onto ElevenLabs' nested conversation_config. */
+  /**
+   * Maps our AgentConfig onto ElevenLabs' nested conversation_config +
+   * platform_settings. PATCH deep-merges top-level keys, so partial configs only
+   * touch the fields they carry. Phase 12 field paths verified against the
+   * Create/Update-agent OpenAPI on 2026-07-13:
+   *   conversation_config.tts.{stability(0-1,def .5)|similarity_boost(0-1,def .8)|speed(def 1)}
+   *   conversation_config.asr.keywords: string[]  (ASR bias words)
+   *   conversation_config.conversation.max_duration_seconds: int (def 600)
+   *   conversation_config.turn.silence_end_call_timeout: number sec (def -1 = off)
+   *   platform_settings.data_collection: map<identifier,{type,description}>
+   *   platform_settings.evaluation.criteria: [{id,name,type:'prompt',conversation_goal_prompt}]
+   *   platform_settings.auth.enable_auth: bool (false = public)
+   * MCP (agent.prompt.mcp_server_ids) takes PRE-REGISTERED server ids, not URLs,
+   * so it isn't exposed here — see the Phase 12 log for the verdict.
+   */
   private toProviderConfig(cfg: Partial<AgentConfig>) {
     // Custom LLM (verified 2026-07-13): prompt.llm='custom-llm' + prompt.custom_llm
     // {url, model_id?, api_key:{secret_id}} — the key is a workspace-secret ref,
     // never a plain string. https://elevenlabs.io/docs/eleven-agents/customization/llm/custom-llm
     const custom = cfg.customLlm
+    const conversation_config: Record<string, unknown> = {
+      agent: {
+        // empty string ⇒ user speaks first (agent waits); verified against
+        // https://elevenlabs.io/docs/api-reference/agents/create
+        ...(cfg.firstMessage !== undefined && { first_message: cfg.firstMessage }),
+        language: cfg.language ?? 'en',
+        prompt: {
+          ...(cfg.systemPrompt !== undefined && { prompt: cfg.systemPrompt }),
+          ...(custom
+            ? {
+                llm: 'custom-llm',
+                custom_llm: {
+                  url: custom.url,
+                  ...(custom.modelId && { model_id: custom.modelId }),
+                  ...(custom.apiKeySecretId && { api_key: { secret_id: custom.apiKeySecretId } }),
+                },
+              }
+            : cfg.llm !== undefined && { llm: cfg.llm }),
+        },
+      },
+    }
+
+    // tts carries the voice AND the speech tuning — build it once so neither clobbers the other.
+    const tts: Record<string, number | string> = {}
+    if (cfg.voiceId !== undefined) tts.voice_id = cfg.voiceId
+    if (cfg.speech?.stability !== undefined) tts.stability = cfg.speech.stability
+    if (cfg.speech?.similarityBoost !== undefined) tts.similarity_boost = cfg.speech.similarityBoost
+    if (cfg.speech?.speed !== undefined) tts.speed = cfg.speech.speed
+    if (Object.keys(tts).length) conversation_config.tts = tts
+
+    if (cfg.transcription?.keywords) conversation_config.asr = { keywords: cfg.transcription.keywords }
+    if (cfg.call?.maxDurationSecs !== undefined)
+      conversation_config.conversation = { max_duration_seconds: cfg.call.maxDurationSecs }
+    if (cfg.call?.endOnSilenceSecs !== undefined)
+      conversation_config.turn = { silence_end_call_timeout: cfg.call.endOnSilenceSecs }
+
+    const platform_settings: Record<string, unknown> = {}
+    if (cfg.analysis) {
+      // data_collection is keyed by identifier; our human name slugifies to the key
+      // and reappears as data_collection_id in the post-call results.
+      platform_settings.data_collection = Object.fromEntries(
+        cfg.analysis.dataCollection
+          .slice(0, 30)
+          .map((f) => [slugify(f.name), { type: f.type, description: f.description }])
+      )
+      platform_settings.evaluation = {
+        criteria: cfg.analysis.successCriteria.slice(0, 30).map((c) => ({
+          id: slugify(c.name),
+          name: c.name,
+          type: 'prompt',
+          conversation_goal_prompt: c.prompt,
+        })),
+      }
+    }
+    if (cfg.widget?.public !== undefined) platform_settings.auth = { enable_auth: !cfg.widget.public }
+
     return {
       ...(cfg.name !== undefined && { name: cfg.name }),
-      conversation_config: {
-        agent: {
-          // empty string ⇒ user speaks first (agent waits); verified against
-          // https://elevenlabs.io/docs/api-reference/agents/create
-          ...(cfg.firstMessage !== undefined && { first_message: cfg.firstMessage }),
-          language: cfg.language ?? 'en',
-          prompt: {
-            ...(cfg.systemPrompt !== undefined && { prompt: cfg.systemPrompt }),
-            ...(custom
-              ? {
-                  llm: 'custom-llm',
-                  custom_llm: {
-                    url: custom.url,
-                    ...(custom.modelId && { model_id: custom.modelId }),
-                    ...(custom.apiKeySecretId && { api_key: { secret_id: custom.apiKeySecretId } }),
-                  },
-                }
-              : cfg.llm !== undefined && { llm: cfg.llm }),
-          },
-        },
-        ...(cfg.voiceId !== undefined && { tts: { voice_id: cfg.voiceId } }),
-      },
+      conversation_config,
+      ...(Object.keys(platform_settings).length && { platform_settings }),
     }
   }
 
@@ -384,6 +446,7 @@ export class ElevenLabsEngine implements VoiceEngine {
     const meta = d.metadata ?? {}
     const pc = meta.phone_call ?? {} // {direction, agent_number, external_number} — VERIFY vs captured fixture
     const direction: CallEvent['direction'] = pc.direction === 'outbound' ? 'outbound' : 'inbound'
+    const analysis = this.normalizeAnalysis(d.analysis)
     return {
       providerCallId: d.conversation_id,
       direction,
@@ -396,6 +459,44 @@ export class ElevenLabsEngine implements VoiceEngine {
       recordingUrl: null,
       status: d.status ?? 'done',
       // metadata.cost is in ElevenLabs credits, not cents; money comes from reconciliation (rule 5).
+      ...(analysis && { analysis }),
     }
+  }
+
+  /**
+   * Phase 12: map data.analysis (verified against the Get-Conversation OpenAPI,
+   * same model as the post_call_transcription webhook):
+   *   call_successful: 'success'|'failure'|'unknown'  → success true/false/undefined
+   *   evaluation_criteria_results: map<id,{criteria_id,result,rationale}>  → criteria[]
+   *   data_collection_results: map<id,{value,rationale,...}>  → data{id: value}
+   * Sentiment is NOT native to ElevenLabs; a seeded "user_sentiment" data field,
+   * if present, is surfaced into the neutral `sentiment` slot for convenience.
+   */
+  private normalizeAnalysis(a: any): CallAnalysis | undefined {
+    if (!a || typeof a !== 'object') return undefined
+    const out: CallAnalysis = {}
+    if (a.call_successful === 'success') out.success = true
+    else if (a.call_successful === 'failure') out.success = false
+
+    if (a.evaluation_criteria_results && typeof a.evaluation_criteria_results === 'object') {
+      const criteria = Object.values(a.evaluation_criteria_results as Record<string, any>).map((r) => ({
+        name: r.criteria_id ?? '',
+        result: r.result ?? 'unknown',
+        ...(r.rationale && { rationale: r.rationale }),
+      }))
+      if (criteria.length) out.criteria = criteria
+    }
+
+    if (a.data_collection_results && typeof a.data_collection_results === 'object') {
+      const data = Object.fromEntries(
+        Object.entries(a.data_collection_results as Record<string, any>).map(([k, v]) => [k, v?.value])
+      )
+      if (Object.keys(data).length) {
+        out.data = data
+        if (data.user_sentiment != null) out.sentiment = String(data.user_sentiment)
+      }
+    }
+
+    return Object.keys(out).length ? out : undefined
   }
 }

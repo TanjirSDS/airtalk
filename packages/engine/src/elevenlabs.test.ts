@@ -58,4 +58,64 @@ describe('normalizeCallEvent', () => {
   it('throws on a non post-call payload', () => {
     expect(() => engine.normalizeCallEvent({ type: 'other' })).toThrow()
   })
+
+  it('extracts the post-call analysis block (Phase 12)', () => {
+    const ev = engine.normalizeCallEvent(fixture)
+    expect(ev.analysis).toMatchObject({ success: true, sentiment: 'neutral' })
+    expect(ev.analysis?.data).toMatchObject({ user_sentiment: 'neutral' })
+    expect(ev.analysis?.data?.call_summary).toEqual(expect.any(String))
+    expect(ev.analysis?.criteria).toEqual([
+      { name: 'call_successful', result: 'success', rationale: expect.any(String) },
+    ])
+  })
+
+  it('omits analysis when the payload carries none', () => {
+    const bare = { type: 'post_call_transcription', event_timestamp: 1, data: { conversation_id: 'c', status: 'done' } }
+    expect(engine.normalizeCallEvent(bare).analysis).toBeUndefined()
+  })
+})
+
+// Offline analog of the "save → GET the EL agent → values match" acceptance:
+// stub fetch, PATCH the agent, and assert the request body hit the verified paths.
+describe('agent config mapping (Phase 12)', () => {
+  it('maps every setting onto the verified provider paths', async () => {
+    let captured: any
+    const orig = globalThis.fetch
+    globalThis.fetch = (async (_url: string, init: any) => {
+      captured = JSON.parse(init.body)
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '' }
+    }) as unknown as typeof fetch
+    try {
+      await engine.updateAgent('agent_1', {
+        voiceId: 'v1',
+        speech: { stability: 0.3, similarityBoost: 0.9, speed: 1.1 },
+        transcription: { keywords: ['Airtalk', 'Cal.com'] },
+        call: { maxDurationSecs: 300, endOnSilenceSecs: 20 },
+        analysis: {
+          dataCollection: [{ name: 'Call Summary', type: 'string', description: 'A concise summary.' }],
+          successCriteria: [{ name: 'Call Successful', prompt: 'Did it work?' }],
+        },
+        widget: { public: false },
+      })
+    } finally {
+      globalThis.fetch = orig
+    }
+    expect(captured.conversation_config.tts).toMatchObject({
+      voice_id: 'v1',
+      stability: 0.3,
+      similarity_boost: 0.9,
+      speed: 1.1,
+    })
+    expect(captured.conversation_config.asr).toEqual({ keywords: ['Airtalk', 'Cal.com'] })
+    expect(captured.conversation_config.conversation).toEqual({ max_duration_seconds: 300 })
+    expect(captured.conversation_config.turn).toEqual({ silence_end_call_timeout: 20 })
+    expect(captured.platform_settings.data_collection).toEqual({
+      call_summary: { type: 'string', description: 'A concise summary.' },
+    })
+    expect(captured.platform_settings.evaluation.criteria).toEqual([
+      { id: 'call_successful', name: 'Call Successful', type: 'prompt', conversation_goal_prompt: 'Did it work?' },
+    ])
+    // public:false ⇒ auth required (enable_auth true)
+    expect(captured.platform_settings.auth).toEqual({ enable_auth: true })
+  })
 })

@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@airtalk/db'
 import type { VoiceEngine } from '@airtalk/engine'
 import { externalNumber, recordOptOut } from './opt-out'
-import type { CallOutcome } from './outcome'
+import { deriveOutcome, type CallOutcome } from './outcome'
 import { recordCallUsage } from './usage'
 
 // Rule 2: verify signature → insert webhook_events (UNIQUE event_id, skip on
@@ -74,6 +74,8 @@ export async function handleElevenLabsWebhook(
           status: ev.status,
           cost_cents: ev.costCents ?? null,
           booking_ref: booking?.booking_ref ?? null,
+          // Phase 12: native post-call analysis (null when the payload carried none).
+          analysis: ev.analysis ?? null,
         },
         { onConflict: 'provider_call_id' }
       )
@@ -99,16 +101,19 @@ export async function handleElevenLabsWebhook(
 
     // Phase 3: outcome extraction — best-effort, never fails the webhook.
     // Phase 6: prefer the Inngest queue; classify inline only when it refused.
+    // Phase 12: EL analysis takes precedence over the classifier where decisive
+    // (see deriveOutcome). The Inngest path applies the same precedence itself.
     const queued = enqueueClassify ? await enqueueClassify(ev.providerCallId).catch(() => false) : false
     if (!queued) {
       const result = classify ? await classify(ev.transcript).catch(() => null) : null
-      if (result) {
+      const derived = deriveOutcome(result, ev.analysis ?? null)
+      if (derived) {
         await db
           .from('calls')
-          .update({ outcome: result.outcome, summary: result.summary })
+          .update({ outcome: derived.outcome, summary: derived.summary })
           .eq('provider_call_id', ev.providerCallId)
         // Phase 7: same opt-out handling the Inngest classify path does.
-        if (result.outcome === 'opt_out' && agent?.org_id) {
+        if (derived.outcome === 'opt_out' && agent?.org_id) {
           const e164 = externalNumber({ direction: ev.direction, from_e164: ev.fromE164, to_e164: ev.toE164 })
           if (e164) await recordOptOut(db, agent.org_id, e164).catch((e) => console.error('recordOptOut failed:', e))
         }

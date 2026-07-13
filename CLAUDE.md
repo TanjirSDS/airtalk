@@ -607,3 +607,95 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   echoed on a live call; create/update a custom_llm agent and confirm the key
   landed in EL secrets (GET /v1/convai/secrets), not our DB; confirm
   platform_settings.auth.enable_auth path and the curated LLM ids on a live GET.
+
+### Phase 12 agent settings + native analysis (2026-07-13)
+- VERIFIED EL paths (2026-07-13, rule 6; cited in elevenlabs.ts toProviderConfig).
+  All map inside conversation_config / platform_settings; PATCH deep-merges
+  top-level keys, so our partial configs only touch what they carry:
+  - Speech → conversation_config.tts.{stability(0-1,def .5) | similarity_boost
+    (0-1,def .8) | speed(def 1)}. tts is built ONCE (voice_id + speech) so neither
+    clobbers the other.
+  - Transcription keywords → conversation_config.asr.keywords: string[]
+    ("Keywords to boost prediction probability for").
+  - Call → conversation_config.conversation.max_duration_seconds (int, def 600)
+    and conversation_config.turn.silence_end_call_timeout (number sec, def -1 =
+    off) — max lives under .conversation, silence under .turn (two sub-objects).
+  - Data collection → platform_settings.data_collection: map keyed by identifier
+    → {type, description}. Our human name slugifies to the key and reappears as
+    data_collection_id in results. EL type set is string/boolean/integer/number;
+    our AgentConfig subset (string/number/boolean) maps 1:1.
+  - Success criteria → platform_settings.evaluation.criteria: [{id, name,
+    type:'prompt', conversation_goal_prompt}] (cap 30, enforced in adapter + UI).
+  - Widget public → platform_settings.auth.enable_auth = !public.
+  - CAVEAT: the Create/Update-agent OpenAPI truncates the platform_settings
+    request-body sub-schema; data_collection/evaluation shapes are corroborated
+    by the RESULTS schema, not seen field-for-field in the request body — confirm
+    on a live create/GET. (§4 of the research report.)
+- MCP VERDICT: skipped. conversation_config.agent.prompt.mcp_server_ids (and
+  native_mcp_server_ids) are string arrays of PRE-REGISTERED server ids
+  (registered via POST /v1/convai/mcp-servers), NOT server URLs — a plain
+  server-URL list doesn't map. The accordion shows a "coming soon" placeholder;
+  wire a real server-registration flow later.
+- AgentConfig gained speech?/transcription?/call?/analysis?/widget? (provider-
+  neutral); CallEvent gained analysis? {success?, criteria?[{name,result,
+  rationale}], data?, sentiment?}. Sentiment is NOT native to EL — normalizeAnalysis
+  surfaces a seeded "user_sentiment" data field into the neutral sentiment slot;
+  otherwise it stays undefined. calls.analysis jsonb added in 0011 (nullable; no
+  db type file — @airtalk/db is untyped SupabaseClient, so no type regen needed).
+- ANALYSIS PAYLOAD (verified via Get-Conversation OpenAPI = same model as the
+  post_call_transcription webhook): data.analysis.{call_successful:'success'|
+  'failure'|'unknown', transcript_summary, evaluation_criteria_results (map<id,
+  {criteria_id,result,rationale,score?}>), data_collection_results (map<id,
+  {data_collection_id,value,rationale,json_schema}>)}. normalizeAnalysis is
+  defensive (never throws) so an analysis-mapping failure can't fail the webhook
+  (rule 2 untouched — event_id/idempotency logic unchanged; the upsert just gained
+  analysis).
+- OUTCOME PRECEDENCE (lib/outcome.ts deriveOutcome, pure + tested): the gpt-4o-mini
+  classifier still owns the rich label, the summary, AND opt_out detection (none
+  of which EL provides). EL's verdict is *preferred* only where decisive:
+  opt_out is sacred (Phase 7 compliance) and wins over EL; otherwise an EL
+  'failure' overrides an optimistic classifier label → 'failed'. EL 'success'/
+  'unknown' has no 1:1 map to our 8-way enum (booked vs question vs lead) so the
+  classifier's finer label stands. With analysis but NO classifier (no
+  OPENAI_API_KEY), an EL 'failure' alone still sets 'failed'; success/unknown
+  yields nothing. No analysis at all → classifier is the sole source (Phase 3
+  unchanged). Applied in BOTH classify paths (Inngest classify-call now selects
+  + reads calls.analysis; inline webhook fallback), so production (Inngest-first)
+  and dev (inline) agree. The webhook never pre-writes outcome, so the Inngest
+  "already classified" guard still lets the job run.
+- PERSISTENCE: the whole accordion rides the builder's ONE Save — updateAgentAction
+  now also takes speech/transcription/call/analysis/widget and merges them into
+  agents.config.agentConfig (jsonb, no schema change) → ONE updateAgent + ONE
+  version row (rule 4), never per-section saves. Settings state is lifted into
+  AgentBuilder; dirty compares JSON of settings vs initial.
+- UI: Functions + Knowledge Base stay in the server-rendered `rail` (their own
+  actions, server-fetched data); the settings half (Speech / Realtime Transcription
+  / Call Settings / Post-Call Data Extraction + Success Criteria / Security /
+  Webhook Settings / MCPs) is a client component (settings-rail.tsx) rendered
+  right below the rail — two Accordion groups stacked in the documented handoff
+  order. Radix Slider/Switch, a keyword tag-input, name/type/description rows with
+  +Add. Webhook Settings links to /integrations (Phase 17). Security holds the
+  widget-public toggle; ShareDialog is left as-is (still forces public on share-ON
+  — the two agree at the default public=true; flipping Security off breaks the
+  share link + in-app test widget, as noted to the user).
+- SEEDING (item 5 honored — no mass-PATCH): NEW agents are seeded at create
+  (createStoredAgent) with DEFAULT_ANALYSIS (Retell parity: "Call Summary" +
+  "User Sentiment" data fields, "Call Successful" success criterion) and widget
+  {public:true} (keeps the test widget working). "Call Summary" overlaps EL's
+  native transcript_summary but is kept for Retell parity. EXISTING agents show
+  those defaults in the builder and persist them on their NEXT save only.
+  SPEECH_DEFAULTS/CALL_DEFAULTS/DEFAULT_ANALYSIS live in
+  templates/settings-defaults.ts (browser-safe, shared by the create action + UI).
+- Fixture: post-call-transcription.json extended with a SYNTHETIC analysis block
+  (call_successful/transcript_summary + evaluation_criteria_results +
+  data_collection_results) — still marked SYNTHETIC; replace with a captured live
+  payload once keys exist.
+- Acceptance verified OFFLINE (no Supabase/EL env as of Phase 12): typecheck +
+  lint (provider fence intact) + build clean; 143 tests pass (+12: normalizeCallEvent
+  analysis extraction, fetch-stubbed config-mapping round-trip = the offline analog
+  of "save→GET→match", deriveOutcome precedence ×6, webhook analysis-populates +
+  EL-failure-precedence + classifier-fallback; idempotency test unchanged & green).
+  LIVE acceptance still needs the stack: apply 0011; save each control → GET the
+  EL agent and diff the verified paths (esp. the §4-caveated data_collection /
+  evaluation shapes); send a post-call webhook with analysis → calls.analysis
+  populated + outcome precedence; confirm one version row per multi-section save.
