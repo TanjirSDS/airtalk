@@ -19,14 +19,18 @@ export async function GET(req: NextRequest) {
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode('date,agent,direction,from,to,duration_secs,outcome,status,summary\n'))
+      controller.enqueue(
+        encoder.encode('date,agent,direction,from,to,duration_secs,cost_cents,outcome,status,summary\n')
+      )
     },
     // One page per pull(), so backpressure from the client throttles the DB reads.
     async pull(controller) {
       const { data, error } = await applyCallFilters(
         db
           .from('calls')
-          .select('started_at, direction, from_e164, to_e164, duration_secs, outcome, status, summary, agents(name)'),
+          .select(
+            'started_at, direction, from_e164, to_e164, duration_secs, cost_cents, outcome, status, summary, agents(name)'
+          ),
         filters
       )
         .order('started_at', { ascending: false })
@@ -43,6 +47,7 @@ export async function GET(req: NextRequest) {
           r.from_e164,
           r.to_e164,
           r.duration_secs,
+          r.cost_cents,
           r.outcome,
           r.status,
           r.summary,

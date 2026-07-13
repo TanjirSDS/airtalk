@@ -21,6 +21,10 @@ export async function recordOptOut(db: SupabaseClient, orgId: string, e164: stri
     .upsert({ org_id: orgId, e164, source }, { onConflict: 'org_id,e164', ignoreDuplicates: true })
   if (error) throw new Error(`opt_outs insert: ${error.message}`)
 
+  // Phase 14: mirror onto contacts.dnc for DISPLAY. opt_outs above is the
+  // enforcement source; a missing contact row just means nothing to flag yet.
+  await db.from('contacts').update({ dnc: true }).eq('org_id', orgId).eq('e164', e164)
+
   const { data: campaigns } = await db.from('campaigns').select('id').eq('org_id', orgId)
   if (campaigns?.length) {
     await db

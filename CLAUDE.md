@@ -773,3 +773,81 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   from /knowledge ⇄ builder reflects both ways; delete detaches everywhere; buy →
   assign → release round-trip (Twilio test creds); SIP import creates a working EL
   number record; per-plan number cap enforced server-side.
+
+### Phase 14 call history + contacts (2026-07-13)
+- 0013: contacts (id, org_id, e164, first_name, last_name, external_id, notes,
+  dnc bool default false, created_at, UNIQUE(org_id, e164)) + contacts_org_rw RLS
+  (is_org_member, already ORs is_admin) + calls.contact_id uuid null FK ON DELETE
+  SET NULL (keep call history if a contact is deleted, mirror of the agent-delete
+  rule). Migration number is 0013 (Phase 13 took 0012).
+- COUNTERPARTY RULE (the number a contact keys on): externalNumber() from
+  lib/opt-out.ts — from_e164 on inbound, to_e164 on outbound (the customer side,
+  never our agent's number). Reused verbatim by contact linking so opt-out and
+  contacts agree on "who".
+- AUTO-LINK: only the post-call webhook carries from/to, so it does the real work
+  — upsertContact(db, orgId, e164) (lib/contacts.ts, insert on conflict do nothing
+  → select id, idempotent) BEFORE the calls upsert, then contact_id is inlined
+  into that one upsert (no second update; smaller diff). The reconcile INSERT path
+  has NO phone number (ProviderCall/listCalls carry none — same ceiling as Phase 7
+  booking_ref), so reconcile can't link the rows it just inserted; instead it runs
+  backfillOrgContacts(db, orgId) per affected org after recompute_usage — the same
+  idempotent helper the script uses — so any call a real webhook has since filled
+  in gets linked (self-heal), best-effort (never fails reconcile). ceiling noted:
+  a reconcile-inserted row with no webhook ever stays unlinked (no e164 to key on).
+- DNC-MIRROR DECISION: recordOptOut (the single choke point for both the Inngest
+  classify path AND the inline webhook fallback) now also does
+  contacts.update({dnc:true}) on (org_id, e164) after the opt_outs upsert. opt_outs
+  stays the ONLY campaign enforcement source (the runner scrubs opt_outs, never
+  contacts); contacts.dnc is DISPLAY-ONLY (a badge on /contacts + the drawer). A
+  missing contact row just means nothing to flag — the update no-ops.
+- backfill-contacts (npm run): scripts/backfill-contacts.ts → backfillOrgContacts
+  over ALL orgs. Pages calls where contact_id is null AND a number exists (rows
+  without a number, i.e. reconcile inserts, are skipped and stop the page loop so
+  it can't spin). Idempotent: only touches contact_id-null rows + upsertContact
+  dedups → run twice, second run links 0. ponytail: two queries per call; batch
+  by (org,number) only if a millions-row backfill ever gets slow.
+- CALL HISTORY: call-filters.ts extended IN PLACE (single source — table + CSV
+  inherit) with search (free-text number → q.or(from_e164/to_e164 ilike); value
+  stripped to [\d+] so it can't inject into PostgREST or() syntax and E.164 rows
+  match cleanly) + formatCents (rule 5: null → em-dash, never estimated). /calls
+  gained a Cost column (cost_cents) + date presets (Today/7d/30d, pure server-side
+  <Link>s computing from/to, no client) + the search box; export/route.ts added the
+  raw cost_cents column.
+- DRAWER: ?call=<id> on /calls server-fetches the detail (fetchCallDetail in
+  lib/call-detail-data.ts) and renders CallDrawer (a Sheet); rows are a client
+  CallsTable that router.push(?call=…, {scroll:false}) merging current filters, so
+  the drawer deep-links and preserves table state. /calls/[id] renders the SAME
+  shared CallDetail component for direct links (rewritten off fetchCallDetail).
+- CallDetail (client, components/call-detail.tsx): header (colored outcome pill
+  via OUTCOME_COLORS, agent, direction, from→to, started, duration, cost) + Summary
+  + Conversation analysis (calls.analysis criteria pass/fail chips + rationale +
+  sentiment) + inline Contact panel (item 6, edits via updateContactAction) + Tabs.
+  ponytail: CallPlayer bundles audio + click-to-seek transcript, so it IS the
+  Transcription tab (default) rather than a duplicate audio element above.
+- LOGS TAB SOURCE: webhook_events (which is org-less + service-role-only under RLS,
+  and has NO type/created_at columns — only event_id/payload/processed_at). Read
+  with serviceClient scoped to THIS call's conversation_id via
+  .eq('payload->data->>conversation_id', providerCallId) — safe because the
+  RLS-scoped calls fetch already proved ownership. Timeline = {type =
+  event_id.split(':')[0], at = processed_at}; ZERO matching rows ⇒ "backfilled by
+  nightly reconciliation" note (a reconcile insert has no webhook). Data tab =
+  analysis.data extraction values + campaign_contacts.vars (joined by
+  provider_call_id) for outbound.
+- CONTACTS: /contacts (app/contacts/{page,actions}.ts + components/contacts-table.tsx).
+  Table (Phone, First/Last, Contact ID=external_id, Calls count via calls(count)
+  embed, DNC badge), client-side search (loads ≤1000, ponytail: server-side search
+  when a tenant outgrows that), CSV import dialog (papaparse client-side like the
+  campaign wizard; merge upsert on (org_id,e164) that OMITS dnc from the payload so
+  an existing opt-out is never cleared, names/external_id/notes updated), row →
+  detail Sheet (editable fields + related-calls list linking to /calls?call=<id>).
+  CRM-sync banner links /integrations (Phase 17). updateContactAction is shared by
+  the contacts panel AND the call drawer's Contact panel. Nav: Contacts inserted
+  after Call History (canonical order), new UsersIcon.
+- Acceptance verified OFFLINE (no Supabase/EL env as of Phase 14): typecheck + lint
+  (provider fence intact) + build clean (/calls, /calls/[id], /contacts emit); 154
+  tests, 148 pass / 6 skip live-only (+ webhook contact create+link+no-dup-on-replay,
+  opt-out→dnc mirror, contacts RLS isolation case). LIVE acceptance still needs the
+  stack: apply 0013; fixture webhook creates+links a contact & replay doesn't
+  duplicate; backfill-contacts twice = same counts; opt-out flips contacts.dnc;
+  org B can't see org A's contacts (rls.test); drawer deep-link (?call=) opens
+  directly; CSV export columns match the new filters exactly.

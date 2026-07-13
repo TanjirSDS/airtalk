@@ -51,6 +51,11 @@ describe.skipIf(!live)('RLS org isolation (live)', () => {
       name: `${stamp}-kb-${tag}`,
       source_type: 'text',
     })
+    await admin.from('contacts').insert({
+      org_id: org.id,
+      e164: `+1555${tag === 'a' ? '0000001' : '0000002'}`,
+      first_name: `${stamp}-${tag}`,
+    })
 
     const client = createClient(URL!, ANON_KEY!, { auth: { persistSession: false } })
     const { error: sErr } = await client.auth.signInWithPassword({ email, password })
@@ -99,6 +104,23 @@ describe.skipIf(!live)('RLS org isolation (live)', () => {
       .from('kb_documents')
       .select('id')
       .eq('provider_kb_id', `${stamp}-kb-intruder`)
+    expect(data).toHaveLength(0)
+  }, 30_000)
+
+  it('contacts are org-isolated (read + write)', async () => {
+    const { data: aC } = await clientA.from('contacts').select('first_name, org_id')
+    const { data: bC } = await clientB.from('contacts').select('first_name, org_id')
+    expect(aC!.every((r) => r.org_id === orgs[0])).toBe(true)
+    expect(aC!.some((r) => r.first_name === `${stamp}-a`)).toBe(true)
+    expect(aC!.some((r) => r.first_name === `${stamp}-b`)).toBe(false)
+    expect(bC!.some((r) => r.first_name === `${stamp}-a`)).toBe(false)
+
+    // A member cannot create a contact in another org (with-check rejects).
+    const { error } = await clientA
+      .from('contacts')
+      .insert({ org_id: orgs[1], e164: `+1555${'9999999'}`, first_name: `${stamp}-intruder` })
+    expect(error).toBeTruthy()
+    const { data } = await admin.from('contacts').select('id').eq('first_name', `${stamp}-intruder`)
     expect(data).toHaveLength(0)
   }, 30_000)
 

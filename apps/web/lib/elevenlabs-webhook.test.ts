@@ -30,6 +30,7 @@ function fakeDb() {
     campaigns: [],
     campaign_contacts: [],
     opt_outs: [],
+    contacts: [],
   }
   const rpcCalls: { name: string; args: any }[] = []
 
@@ -75,8 +76,11 @@ function fakeDb() {
               data = [existing]
             }
           } else {
-            rows.push(row)
-            data = [row]
+            // Real rows get a gen_random_uuid() id; mimic it so contact_id
+            // links (calls.contact_id → contacts.id) are assertable.
+            const stored = 'id' in row ? row : { id: `${name}_${rows.length + 1}`, ...row }
+            rows.push(stored)
+            data = [stored]
           }
           const result = { data, error: null }
           return {
@@ -139,6 +143,24 @@ describe('elevenlabs webhook handler', () => {
     expect(call.provider_call_id).toBe('conv_placeholder00000000000000000')
     expect(call.duration_secs).toBe(42)
     expect(db.tables.webhook_events[0].processed_at).toBeTruthy()
+  })
+
+  it('creates + links a contact for the caller; replay does not duplicate (Phase 14)', async () => {
+    const db = fakeDb()
+    db.tables.agents.push({
+      id: 'ag_1',
+      org_id: 'org_1',
+      provider_agent_id: 'agent_placeholder0000000000000000',
+    })
+    const sig = sign(body)
+
+    await handleElevenLabsWebhook(body, sig, engine, db)
+    await handleElevenLabsWebhook(body, sig, engine, db) // replay → duplicate ignored
+
+    expect(db.tables.contacts).toHaveLength(1)
+    // fixture is inbound, so the external (customer) number is from_e164.
+    expect(db.tables.contacts[0]).toMatchObject({ org_id: 'org_1', e164: '+15559876543' })
+    expect(db.tables.calls[0].contact_id).toBe(db.tables.contacts[0].id)
   })
 
   it('counts usage once per call — replays and unknown agents add nothing', async () => {
@@ -221,10 +243,11 @@ describe('elevenlabs webhook handler', () => {
     const classify = async () => ({ outcome: 'opt_out' as const, summary: 'asked to be removed' })
     await handleElevenLabsWebhook(body, sign(body), engine, db, classify)
 
-    expect(db.tables.opt_outs).toEqual([
-      { org_id: 'org_1', e164: '+15559876543', source: 'call' },
-    ])
+    expect(db.tables.opt_outs).toHaveLength(1)
+    expect(db.tables.opt_outs[0]).toMatchObject({ org_id: 'org_1', e164: '+15559876543', source: 'call' })
     expect(db.tables.campaign_contacts.map((c: any) => c.status)).toEqual(['opted_out', 'pending'])
     expect(db.tables.calls[0].outcome).toBe('opt_out')
+    // Phase 14: opt-out mirrors onto the contact's dnc flag (display only).
+    expect(db.tables.contacts[0]).toMatchObject({ e164: '+15559876543', dnc: true })
   })
 })

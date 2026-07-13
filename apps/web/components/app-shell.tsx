@@ -15,6 +15,7 @@ import {
   HashIcon,
   MenuIcon,
   PhoneIcon,
+  UsersIcon,
   Waveform,
   type IconProps,
 } from './icons'
@@ -36,6 +37,7 @@ const NAV: { href: string; label: string; Icon: (p: IconProps) => ReactNode }[] 
   { href: '/knowledge', label: 'Knowledge Base', Icon: BookIcon },
   { href: '/numbers', label: 'Phone Numbers', Icon: HashIcon },
   { href: '/calls', label: 'Call History', Icon: PhoneIcon },
+  { href: '/contacts', label: 'Contacts', Icon: UsersIcon },
   { href: '/campaigns', label: 'Campaigns', Icon: CampaignIcon },
   { href: '/billing', label: 'Billing', Icon: BillingIcon },
 ]

@@ -19,7 +19,8 @@
     "stripe-acceptance": "tsx scripts/stripe-acceptance.ts",
     "seed-admin": "tsx scripts/seed-admin.ts",
     "seed-learning": "tsx scripts/seed-learning.ts",
-    "migrate-agent-config": "tsx scripts/migrate-agent-config.ts"
+    "migrate-agent-config": "tsx scripts/migrate-agent-config.ts",
+    "backfill-contacts": "tsx scripts/backfill-contacts.ts"
   },
   "dependencies": {
     "@airtalk/db": "*",

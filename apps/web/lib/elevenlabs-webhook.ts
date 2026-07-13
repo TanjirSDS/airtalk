@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@airtalk/db'
 import type { VoiceEngine } from '@airtalk/engine'
+import { upsertContact } from './contacts'
 import { externalNumber, recordOptOut } from './opt-out'
 import { deriveOutcome, type CallOutcome } from './outcome'
 import { recordCallUsage } from './usage'
@@ -57,12 +58,19 @@ export async function handleElevenLabsWebhook(
       .eq('provider_call_id', ev.providerCallId)
       .maybeSingle()
 
+    // Phase 14: auto-link a contact by the external number (customer side).
+    // Done here — the only path that carries from/to — then inlined below so
+    // it's one upsert, not a second update. Reconcile has no number (see contacts.ts).
+    const extNum = externalNumber({ direction: ev.direction, from_e164: ev.fromE164, to_e164: ev.toE164 })
+    const contactId = agent?.org_id && extNum ? await upsertContact(db, agent.org_id, extNum) : null
+
     const { data: callRow } = await db
       .from('calls')
       .upsert(
         {
           agent_id: agent?.id ?? null,
           org_id: agent?.org_id ?? null,
+          contact_id: contactId,
           provider_call_id: ev.providerCallId,
           direction: ev.direction,
           from_e164: ev.fromE164,
