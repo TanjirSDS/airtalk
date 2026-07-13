@@ -36,6 +36,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Select } from './ui/select'
+import { Sheet, SheetContent, SheetTitle } from './ui/sheet'
 
 // Lazy-loaded so single/custom agents never pull the @xyflow bundle; the canvas is
 // browser-only (needs the DOM), so ssr:false.
@@ -152,6 +153,8 @@ export function AgentBuilder({
   const [settings, setSettings] = useState<AgentSettings>(initialSettings)
   const [graph, setGraph] = useState<WorkflowGraph>(config.workflow ?? defaultWorkflow())
   const [pending, startTransition] = useTransition()
+  const [testOpen, setTestOpen] = useState(false)
+  const [simOpen, setSimOpen] = useState(false)
 
   const flowErrors = useMemo(() => (isFlow ? validateWorkflow(graph) : []), [isFlow, graph])
   const effectiveFirstMessage = welcome === 'static' ? firstMessage : ''
@@ -237,6 +240,16 @@ export function AgentBuilder({
               Convert to flow
             </button>
           )}
+          {embed && (
+            <Button variant="outline" size="sm" onClick={() => setTestOpen(true)}>
+              Test
+            </Button>
+          )}
+          {simulation && (
+            <Button variant="outline" size="sm" onClick={() => setSimOpen(true)}>
+              Simulate
+            </Button>
+          )}
           <VersionsSheet agentId={agentId} versions={versions} />
           <ShareDialog agentId={agentId} initialToken={shareToken} />
           <Button onClick={save} disabled={pending || !dirty || !name.trim()}>
@@ -245,34 +258,23 @@ export function AgentBuilder({
         </div>
       </div>
 
-      {/* Metadata strip */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border bg-card px-4 py-2.5 text-xs">
-        <CopyField label="Airtalk ID" value={agentId} />
-        <CopyField label="Provider ID" value={providerAgentId ?? undefined} />
-        <span className="text-muted-foreground">
-          <span className="font-medium text-foreground">${(rate.includedCentsPerMin / 100).toFixed(2)}/min</span>{' '}
-          included · ${(rate.overageCentsPerMin / 100).toFixed(2)}/min overage ({rate.planName})
-        </span>
-        {!isCustom && <Badge variant="secondary">{modelLabel(llm)}</Badge>}
-        <Badge variant="secondary">{LANGUAGES.find((l) => l.code === language)?.name ?? language}</Badge>
-      </div>
+      {/* Metadata strip — hidden for flow agents to give the full-bleed canvas the room. */}
+      {!isFlow && (
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border bg-card px-4 py-2.5 text-xs">
+          <CopyField label="Airtalk ID" value={agentId} />
+          <CopyField label="Provider ID" value={providerAgentId ?? undefined} />
+          <span className="text-muted-foreground">
+            <span className="font-medium text-foreground">${(rate.includedCentsPerMin / 100).toFixed(2)}/min</span>{' '}
+            included · ${(rate.overageCentsPerMin / 100).toFixed(2)}/min overage ({rate.planName})
+          </span>
+          {!isCustom && <Badge variant="secondary">{modelLabel(llm)}</Badge>}
+          <Badge variant="secondary">{LANGUAGES.find((l) => l.code === language)?.name ?? language}</Badge>
+        </div>
+      )}
 
       {/* Body */}
       {isFlow ? (
         <div className="space-y-4">
-          <ConfigRow
-            voices={voices}
-            voiceId={voiceId}
-            setVoiceId={setVoiceId}
-            language={language}
-            setLanguage={setLanguage}
-            llm={llm}
-            setLlm={setLlm}
-            prompt={prompt}
-            setPrompt={setPrompt}
-            showModel
-            showHandbook={false}
-          />
           <FlowCanvas
             graph={graph}
             onChange={setGraph}
@@ -282,17 +284,42 @@ export function AgentBuilder({
             onSettingsChange={setSettings}
             kbDocs={flowKbDocs}
             errors={flowErrors}
+            agentId={agentId}
+            rate={rate}
+            agentSettings={
+              <div className="space-y-3">
+                <div>
+                  <Label className="mb-1 block">Voice</Label>
+                  <VoicePickerDialog voices={voices} value={voiceId} onChange={setVoiceId} />
+                </div>
+                <div>
+                  <Label htmlFor="flow-language" className="mb-1 block">
+                    Language
+                  </Label>
+                  <Select id="flow-language" value={language} onChange={(e) => setLanguage(e.target.value)}>
+                    {LANGUAGES.map((l) => (
+                      <option key={l.code} value={l.code}>
+                        {l.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="flow-llm" className="mb-1 block">
+                    Model
+                  </Label>
+                  <Select id="flow-llm" value={llm} onChange={(e) => setLlm(e.target.value)}>
+                    {MODEL_INFO.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </Select>
+                  <p className="mt-1 text-xs text-muted-foreground">{MODEL_INFO.find((m) => m.id === llm)?.hint}</p>
+                </div>
+              </div>
+            }
           />
-          {embed && (
-            <div className="rounded-xl border bg-card p-4">
-              <h2 className="mb-1 text-sm font-semibold">Test your agent</h2>
-              <p className="mb-3 text-xs text-muted-foreground">
-                In-browser test calls start at the Begin node. Use the Simulation panel below to test
-                starting at a specific step.
-              </p>
-              <TestPanel embed={embed} agentId={agentId} />
-            </div>
-          )}
         </div>
       ) : (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -334,19 +361,34 @@ export function AgentBuilder({
           </div>
 
           <aside className="space-y-4">
-            {embed && (
-              <div className="rounded-xl border bg-card p-4">
-                <h2 className="mb-3 text-sm font-semibold">Test your agent</h2>
-                <TestPanel embed={embed} agentId={agentId} />
-              </div>
-            )}
             {rail}
             <SettingsRail settings={settings} onChange={setSettings} />
           </aside>
         </div>
       )}
 
-      {simulation && <div className="mt-5">{simulation}</div>}
+      <Sheet open={testOpen} onOpenChange={setTestOpen}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
+          <SheetTitle>Test your agent</SheetTitle>
+          {isFlow && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              In-browser test calls start at the Begin node — use Simulate to start at a specific step.
+            </p>
+          )}
+          {embed && (
+            <div className="mt-4">
+              <TestPanel embed={embed} agentId={agentId} />
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={simOpen} onOpenChange={setSimOpen}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl">
+          <SheetTitle className="sr-only">Simulation</SheetTitle>
+          <div className="mt-2">{simulation}</div>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
