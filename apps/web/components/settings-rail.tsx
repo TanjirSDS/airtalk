@@ -256,8 +256,8 @@ export function SettingsRail({
             workspace-level, so per-org outbound webhooks are managed in{' '}
             <Link href="/integrations" className="text-brand underline">
               Integrations
-            </Link>{' '}
-            (coming soon).
+            </Link>
+            .
           </p>
         </AccordionContent>
       </AccordionItem>

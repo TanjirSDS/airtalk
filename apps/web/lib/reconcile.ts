@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@airtalk/db'
 import type { ProviderCall, VoiceEngine } from '@airtalk/engine'
 import { backfillOrgContacts } from './contacts'
 import { currentPeriodUsage, pauseOrgAgents } from './usage'
+import { enqueueWebhookEvent } from './webhooks-out'
 
 export interface CallDiff {
   missing: ProviderCall[]
@@ -98,6 +99,27 @@ export async function reconcileYesterday(db: SupabaseClient, engine: VoiceEngine
     })
     const { error } = await db.from('calls').upsert(rows, { onConflict: 'provider_call_id' })
     if (error) throw new Error(error.message)
+
+    // Phase 17: emit call.completed for the calls the webhook never delivered
+    // (keyed by provider_call_id — a no-op if the webhook already sent one).
+    // These rows are sparse (no from/to/transcript — see the comment above), so
+    // the payload is a minimal neutral shape. Best-effort; never fails reconcile.
+    for (const m of diff.missing) {
+      const orgId = agentByProviderId.get(m.providerAgentId)?.org_id
+      if (!orgId) continue
+      await enqueueWebhookEvent(db, {
+        orgId,
+        eventType: 'call.completed',
+        eventKey: m.providerCallId,
+        payload: {
+          providerCallId: m.providerCallId,
+          direction: m.direction,
+          startedAt: m.startedAt,
+          durationSecs: m.durationSecs,
+          status: m.status,
+        },
+      }).catch((e) => console.error('reconcile call.completed emit failed:', e))
+    }
   }
 
   const localById = new Map(local.map((c) => [c.provider_call_id, c]))

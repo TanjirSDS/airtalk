@@ -29,6 +29,8 @@ import { externalNumber, recordOptOut } from './opt-out'
 import { classifyCall, deriveOutcome } from './outcome'
 import { reconcileYesterday } from './reconcile'
 import { stripeClient } from './stripe'
+import { evaluateAlert, type AlertRow } from './alerts'
+import { attemptDelivery } from './webhooks-out'
 
 // All async work lives here as Inngest functions: retries with backoff come
 // from the platform (default 4 retries), and anything that exhausts them is
@@ -375,11 +377,48 @@ const agentLearning = inngest.createFunction(
   }
 )
 
+/**
+ * Phase 17: outbound webhook delivery. attemptDelivery throws on a non-terminal
+ * failure so Inngest retries with backoff; at the attempt cap it marks the row
+ * 'dead' + Sentry and returns. NOT wrapped in step.run — each Inngest retry must
+ * genuinely re-run the POST (and re-read the incremented attempts).
+ */
+const webhookDeliver = inngest.createFunction(
+  { id: 'webhook-deliver', retries: 5, onFailure: deadLetter, triggers: [{ event: 'webhook/deliver' }] },
+  ({ event }) => attemptDelivery(serviceClient(), event.data.deliveryId as string)
+)
+
+/**
+ * Phase 17: alert evaluator, every 15 minutes. retries:0 (like status-poll) —
+ * evaluateAlert persists crossing state, so a retry with the pre-fire snapshot
+ * would double-fire; the next tick catches anything a crash skipped. Each alert
+ * is isolated in try/catch so one bad rule can't block the rest.
+ */
+const alertEvaluate = inngest.createFunction(
+  { id: 'alert-evaluate', retries: 0, onFailure: deadLetter, triggers: [{ cron: '*/15 * * * *' }] },
+  async () => {
+    const db = serviceClient()
+    const { data: alerts, error } = await db.from('alerts').select('*').eq('enabled', true)
+    if (error) throw new Error(error.message)
+    let fired = 0
+    for (const alert of (alerts ?? []) as AlertRow[]) {
+      try {
+        if (await evaluateAlert(db, alert)) fired++
+      } catch (e) {
+        console.error(`alert ${alert.id} eval failed:`, e)
+      }
+    }
+    return { evaluated: (alerts ?? []).length, fired }
+  }
+)
+
 export const functions = [
   classifyRecordedCall,
   campaignRun,
   reconcileDaily,
   statusPoll,
+  webhookDeliver,
+  alertEvaluate,
   welcomeEmail,
   usageWarnEmail,
   usageCappedEmail,

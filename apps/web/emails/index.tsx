@@ -41,6 +41,29 @@ export function WelcomeEmail({ orgName, appUrl }: { orgName: string; appUrl: str
   )
 }
 
+export function AlertEmail(props: {
+  orgName: string
+  alertName: string
+  metricLabel: string
+  operatorLabel: string
+  value: number
+  threshold: number
+  appUrl: string
+}): ReactElement {
+  return (
+    <Shell preview={`Airtalk alert: ${props.alertName}`}>
+      <Heading as="h2">Alert: {props.alertName}</Heading>
+      <Text>
+        An alert on <strong>{props.orgName}</strong> just fired. {props.metricLabel} {props.operatorLabel}{' '}
+        <strong>{props.threshold}</strong> — currently <strong>{Math.round(props.value * 100) / 100}</strong>.
+      </Text>
+      <Text>
+        <Link href={`${props.appUrl}/alerts?tab=history`}>View alert history →</Link>
+      </Text>
+    </Shell>
+  )
+}
+
 export function UsageWarnEmail(props: { orgName: string; minutesUsed: number; capMinutes: number; appUrl: string }): ReactElement {
   return (
     <Shell preview="You've used 80% of your Airtalk minutes">
