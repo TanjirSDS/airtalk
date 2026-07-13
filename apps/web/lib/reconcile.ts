@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@airtalk/db'
 import type { ProviderCall, VoiceEngine } from '@airtalk/engine'
+import { backfillOrgContacts } from './contacts'
 import { currentPeriodUsage, pauseOrgAgents } from './usage'
 
 export interface CallDiff {
@@ -115,6 +116,13 @@ export async function reconcileYesterday(db: SupabaseClient, engine: VoiceEngine
     if (error) throw new Error(`recompute_usage(${orgId}): ${error.message}`)
     // Recomputation can push an org past its cap — enforce here too.
     await enforceAfterRecompute(db, engine, orgId, period)
+  }
+
+  // Phase 14: self-heal contact links for affected orgs. The just-inserted
+  // missing rows have no from/to (see contacts.ts), so this only picks up calls
+  // a real webhook has since filled in — best-effort, never fails reconcile.
+  for (const orgId of new Set([...affected.values()].map((a) => a.orgId))) {
+    await backfillOrgContacts(db, orgId).catch((e) => console.error('backfillOrgContacts:', e))
   }
 
   if (diff.discrepancySecs > 120) {
