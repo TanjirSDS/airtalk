@@ -1,6 +1,4 @@
 'use client'
-import { useTheme } from 'next-themes'
-import { useEffect, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -13,6 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { useChartTheme } from '../lib/chart-theme'
 import { OUTCOME_COLORS, OUTCOMES } from '../lib/outcome'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 
@@ -24,31 +23,14 @@ export type WeekPoint = { week: string } & Partial<Record<string, number | strin
 
 // Series hues live in OUTCOME_COLORS (a CVD-validated set) and stay fixed in
 // both themes; only the chart chrome (grid, axes, tooltip, the stacked-bar
-// spacer) follows light/dark so it recedes on either surface.
-const UNCLASSIFIED = '#898781'
+// spacer) follows light/dark so it recedes on either surface (useChartTheme).
+export const UNCLASSIFIED_COLOR = '#898781'
 const label = (v: string) => v.replace('_', ' ')
 
 export function DashboardCharts({ perDay, byWeek }: { perDay: DayPoint[]; byWeek: WeekPoint[] }) {
-  const { resolvedTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => setMounted(true), [])
-  const dark = mounted && resolvedTheme === 'dark'
+  const { GRID, BRAND, CARD, tick, axisLine, tooltipStyle } = useChartTheme()
 
-  const GRID = dark ? '#262b37' : '#e6e9ef'
-  const AXIS = dark ? '#333a48' : '#dbdfe7'
-  const BRAND = dark ? '#8486f4' : '#5457e5'
-  const CARD = dark ? '#13161e' : '#ffffff'
-  const tick = { fill: dark ? '#8b97a8' : '#616b7a', fontSize: 12 }
-  const axisLine = { stroke: AXIS }
-  const tooltipStyle = {
-    background: CARD,
-    border: `1px solid ${GRID}`,
-    borderRadius: 12,
-    color: dark ? '#e8ecf3' : '#0c0e14',
-    fontSize: 12,
-  }
-
-  const series = [...OUTCOMES.map((o) => [o, OUTCOME_COLORS[o]] as const), ['unclassified', UNCLASSIFIED] as const]
+  const series = [...OUTCOMES.map((o) => [o, OUTCOME_COLORS[o]] as const), ['unclassified', UNCLASSIFIED_COLOR] as const]
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <Card>

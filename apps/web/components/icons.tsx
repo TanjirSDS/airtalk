@@ -103,6 +103,13 @@ export const GaugeIcon = (p: IconProps) => (
   </Icon>
 )
 
+export const ChartIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3 3v18h18" />
+    <path d="M8 15v3M13 10v8M18 6v12" />
+  </Icon>
+)
+
 export const LogOutIcon = (p: IconProps) => (
   <Icon {...p}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />

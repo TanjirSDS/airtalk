@@ -851,3 +851,80 @@ normalizeCallEvent(payload) → CallEvent { providerCallId, direction, fromE164,
   duplicate; backfill-contacts twice = same counts; opt-out flips contacts.dnc;
   org B can't see org A's contacts (rls.test); drawer deep-link (?call=) opens
   directly; CSV export columns match the new filters exactly.
+
+### Phase 15 analytics + billing tabs (2026-07-13)
+- PURE UI/reporting phase — NO schema change (0001–0013 unchanged, provider fence
+  untouched, no migration). Everything reads existing columns. "Phase 14's column"
+  the spec flagged for cost views = it just needed Phase 14 MERGED (it is); cost is
+  DERIVED (calls.duration_secs + usage_periods), so no new column was required.
+- Money/derivation helpers live beside billing-math in lib/analytics-math.ts (pure,
+  reuses billing-math's OVERAGE_CENTS_PER_MIN + includedRateCentsPerMin — one money
+  source), 14 vitest cases (analytics-math.test.ts):
+  - SUCCESS-RATE derivation (isCallSuccess/successRate): ElevenLabs native verdict
+    (calls.analysis.success, Phase 12) WINS when present, else the outcome heuristic
+    (booked | lead_captured | question_answered = success). Unclassifiable calls (no
+    verdict AND no outcome) are EXCLUDED from the denominator → rate null → card "—".
+    Single definition; both the card and any future consumer route through it.
+  - GRANULARITY bucketing: chooseGranularity(from,to) = day when ≤31 days else week;
+    bucketKey(date, gran) = the UTC day or the Monday of its UTC week; buildBuckets
+    walks ONE DAY at a time and dedupes by bucketKey (stepping by 7 from a non-Monday
+    start could skip a week's Monday near the range end — the bug the test caught),
+    guard-capped so a reversed/absurd range can't spin.
+  - EST. COST (analytics card, estimatedCostCents): minutes × includedRate + whole
+    period overage × 35¢. COARSE BY DESIGN and labelled "estimated — not billing
+    truth" (rule 5): overage is the whole-period figure from usage_periods, added
+    ONLY when the selected range reaches into the current UTC month, so a call can be
+    double-counted at the edge — fine for an estimate, never an invoice.
+  - USAGE-TAB totals (usagePeriodTotals): includedUsed = min(used, cap); overage
+    minutes; billedSoFar = floor(overage_REPORTED) × 35¢ (only what reconciliation
+    has sent Stripe = the rule-5 truth); estTotal = plan base price + floor(overage)
+    × 35¢. Acceptance 900/750 → 150 overage ≈ $52.50 covered.
+- ANALYTICS (/analytics, force-dynamic): one BOUNDED, RLS-scoped fetch (ROW_CAP
+  20k) then JS aggregation in the RSC — the fetchRecentCalls pattern, only the small
+  aggregated arrays cross to the client charts (no unbounded client pull). ceiling
+  noted in code: move to a SQL view/RPC when volume bites. Controls row mirrors
+  /calls: presets (7/30/90d) + native <input type=date> custom range + Agent /
+  Direction / Breakdown (by agent | by outcome | by day-of-week) selects, reusing
+  applyCallFilters/parseCallFilters (search field stripped; default range = trailing
+  30 days). 6 metric cards (Calls, Total minutes, Avg duration, Answer rate, Success
+  rate, Est. cost). 4 charts in AnalyticsCharts (client): Calls-per-bucket line,
+  Minutes-per-bucket bars, Outcomes stacked bars (the generalized dashboard chart,
+  now over day/week buckets not hardcoded weeks), Breakdown horizontal bars (recharts
+  Cell per row: OUTCOME_COLORS for by-outcome, brand otherwise).
+- CHART THEME shared: lib/chart-theme.ts useChartTheme() extracted from
+  dashboard-charts (grid/axis/tooltip/brand for light+dark, mounted-guarded); BOTH
+  dashboard-charts AND analytics-charts consume it now = the "generalize" ask. Series
+  hues are the Phase-3 CVD-validated OUTCOME_COLORS + the brand token — NO new palette
+  introduced, so no re-check needed (dark legibility rides the existing validation).
+- BILLING (/billing → tabs): URL-driven (?tab=plan|history|usage, default plan) —
+  TabBar is styled <Link>s (Tabs-primitive look) and the server renders ONLY the
+  active tab, so History's Stripe call fires only when that tab is open (no
+  over-fetch). Owner gating = the existing role check.
+  - Plan tab: the prior plan picker + portal, moved verbatim.
+  - History tab (owner-only): lib/billing.listInvoices (Stripe stays isolated in
+    lib/billing) → stripe.invoices.list, mapped to a neutral InvoiceRow {id, created,
+    amountCents=total, currency, status, hostedUrl}. STRIPE PAGINATION = cursor via
+    starting_after (page size 12); page.has_more drives the "Load more" button. First
+    page server-rendered; BillingInvoices (client) appends subsequent pages through
+    loadInvoicesAction(lastId) (server action, re-checks owner). Dates rendered as
+    UTC ISO slice (no toLocale) so SSR/client agree (no hydration drift). Empty state
+    pre-subscription (no stripe_customer_id → listInvoices returns [] without calling
+    Stripe); try/catch → friendly line if Stripe is misconfigured. Details → hosted
+    invoice URL in a new tab; status Badge (paid=live, open=warn, void/uncollectible
+    =destructive).
+  - Usage tab: period picker = GET form over distinct usage_periods rows (monthLabel
+    formatted UTC), default latest. 3 cards from usagePeriodTotals (member-readable
+    via usage_org_read RLS). Minutes/day chart = BillingUsageChart (client) with a
+    Day/Week toggle that re-buckets CLIENT-SIDE via the shared bucketKey (pure, no
+    refetch). "Change payment methods" → existing portalAction (owner).
+- DESCOPED (per spec, logged): custom dashboards / "Add chart" (analytics); "Cost by
+  provider" (single provider today) — revisit when a second provider lands.
+- Nav: Analytics inserted after Campaigns (canonical order), new ChartIcon.
+- Acceptance verified OFFLINE (no Supabase/Stripe env as of Phase 15): typecheck +
+  lint (provider fence intact) + build clean (/analytics + /billing routes emit); 162
+  tests pass / 6 live-skip (+14 analytics-math: success derivation, granularity/
+  bucketing incl. the skipped-week regression, est-cost, usage totals). LIVE
+  acceptance still needs the stack: Usage-tab numbers vs usage_periods for the seeded
+  org; invoice list against the stripe-acceptance test-clock data + links open the
+  hosted invoices; filters compose under RLS with no cross-org leakage (org B);
+  dark-mode chart legibility (the palette is the Phase-3-validated set).
